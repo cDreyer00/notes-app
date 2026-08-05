@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   api,
   matchesAccelerator,
@@ -7,6 +8,7 @@ import {
   searchNotes,
   type Config,
   type Note,
+  type ResizeDirection,
 } from "./shared";
 
 type View = "editor" | "grid";
@@ -437,6 +439,20 @@ async function init(): Promise<void> {
       if (event.button !== 0) return;
       event.preventDefault();
       void api.beginDrag();
+    });
+  }
+
+  // Mesma história para as bordas: as nativas são tratadas pelo sistema e a
+  // janela sumiria ao começar o redimensionamento. O Rust marca a interação
+  // primeiro; só depois o resize começa de fato.
+  for (const handle of document.querySelectorAll<HTMLElement>("[data-resize]")) {
+    handle.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const direction = handle.dataset.resize as ResizeDirection;
+      void api
+        .beginResize()
+        .then(() => getCurrentWindow().startResizeDragging(direction));
     });
   }
 

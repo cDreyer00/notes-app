@@ -20,9 +20,22 @@ export interface Config {
   autostart: boolean;
   /** Posição salva da janela; `null` até ela ser movida pela primeira vez. */
   windowPos: [number, number] | null;
+  /** Tamanho salvo da janela; `null` até ela ser redimensionada. */
+  windowSize: [number, number] | null;
   /** Dias de permanência na lixeira; `0` significa "nunca limpar". */
   trashRetentionDays: number;
 }
+
+/** Bordas aceitas por `startResizeDragging`; o tipo não é exportado pela API. */
+export type ResizeDirection =
+  | "North"
+  | "South"
+  | "East"
+  | "West"
+  | "NorthEast"
+  | "NorthWest"
+  | "SouthEast"
+  | "SouthWest";
 
 export const api = {
   getConfig: () => invoke<Config>("get_config"),
@@ -45,6 +58,7 @@ export const api = {
   emptyTrash: () => invoke<number>("empty_trash"),
   hideApp: () => invoke<void>("hide_app"),
   beginDrag: () => invoke<void>("begin_drag"),
+  beginResize: () => invoke<void>("begin_resize"),
   openSettings: () => invoke<void>("open_settings"),
   closeSettings: () => invoke<void>("close_settings"),
   quitApp: () => invoke<void>("quit_app"),

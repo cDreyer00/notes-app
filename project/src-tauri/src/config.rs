@@ -35,6 +35,8 @@ pub struct Config {
     pub autostart: bool,
     /// Canto superior esquerdo, em pixels físicos. `None` até a janela ser movida.
     pub window_pos: Option<(i32, i32)>,
+    /// Largura e altura, em pixels físicos. `None` até a janela ser redimensionada.
+    pub window_size: Option<(u32, u32)>,
     /// Dias que uma nota deletada permanece na lixeira. `0` significa "nunca limpar".
     pub trash_retention_days: u32,
 }
@@ -46,6 +48,7 @@ impl Default for Config {
             shortcuts: Shortcuts::default(),
             autostart: true,
             window_pos: None,
+            window_size: None,
             trash_retention_days: 30,
         }
     }

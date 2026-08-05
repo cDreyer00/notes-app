@@ -8,7 +8,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
+};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -61,8 +63,14 @@ fn position_is_visible(window: &WebviewWindow, x: i32, y: i32) -> bool {
     })
 }
 
-fn restore_window_position(app: &AppHandle, window: &WebviewWindow) {
+fn restore_window_geometry(app: &AppHandle, window: &WebviewWindow) {
     let cfg = config::load(app).unwrap_or_default();
+
+    // O tamanho vem antes da posição: redimensionar depois deslocaria a janela.
+    if let Some((width, height)) = cfg.window_size {
+        let _ = window.set_size(PhysicalSize::new(width, height));
+    }
+
     if let Some((x, y)) = cfg.window_pos {
         if position_is_visible(window, x, y) {
             let _ = window.set_position(PhysicalPosition::new(x, y));
@@ -72,21 +80,25 @@ fn restore_window_position(app: &AppHandle, window: &WebviewWindow) {
     let _ = window.center();
 }
 
-fn save_window_position(app: &AppHandle) {
+fn save_window_geometry(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    let Ok(position) = window.outer_position() else {
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return;
     };
     let Ok(mut cfg) = config::load(app) else {
         return;
     };
 
-    if cfg.window_pos == Some((position.x, position.y)) {
+    let next_pos = Some((position.x, position.y));
+    let next_size = Some((size.width, size.height));
+    if cfg.window_pos == next_pos && cfg.window_size == next_size {
         return;
     }
-    cfg.window_pos = Some((position.x, position.y));
+
+    cfg.window_pos = next_pos;
+    cfg.window_size = next_size;
     let _ = config::save(app, &cfg);
 }
 
@@ -99,7 +111,7 @@ fn show_main(app: &AppHandle) {
         return;
     };
     // Antes do `show` para a janela não piscar no lugar anterior.
-    restore_window_position(app, &window);
+    restore_window_geometry(app, &window);
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
@@ -117,14 +129,14 @@ fn center_main(app: &AppHandle) {
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("app-shown", ());
-    save_window_position(app);
+    save_window_geometry(app);
 }
 
 fn hide_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         // Dá ao frontend a chance de gravar o que ainda está no debounce.
         let _ = window.emit("app-hiding", ());
-        save_window_position(app);
+        save_window_geometry(app);
         let _ = window.hide();
     }
 }
@@ -313,6 +325,15 @@ fn begin_drag(app: AppHandle) {
     }
 }
 
+/// Mesmo motivo do `begin_drag`: as bordas nativas são tratadas pelo sistema e
+/// nenhum evento chega ao webview a tempo de marcar que a interação começou.
+/// O redimensionamento em si é disparado pelo frontend, que sabe qual borda foi
+/// agarrada — `start_resize_dragging` não é exposto no `WebviewWindow` do Rust.
+#[tauri::command]
+fn begin_resize(app: AppHandle) {
+    mark_drag(&app);
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
@@ -327,7 +348,7 @@ fn close_settings(app: AppHandle) {
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
-    save_window_position(&app);
+    save_window_geometry(&app);
     app.exit(0);
 }
 
@@ -348,7 +369,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => show_settings(app),
             "quit" => {
-                save_window_position(app);
+                save_window_geometry(app);
                 app.exit(0);
             }
             _ => {}
@@ -416,6 +437,7 @@ pub fn run() {
             empty_trash,
             hide_app,
             begin_drag,
+            begin_resize,
             open_settings,
             close_settings,
             quit_app
@@ -454,9 +476,9 @@ pub fn run() {
                             hide_main(&win_handle);
                         }
                     }
-                    // Cada movimento renova a carência: arrastar por vários
-                    // segundos não pode expirar no meio do caminho.
-                    WindowEvent::Moved(_) => {
+                    // Cada movimento renova a carência: arrastar ou redimensionar
+                    // por vários segundos não pode expirar no meio do caminho.
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         if is_dragging(&win_handle) {
                             mark_drag(&win_handle);
                         }

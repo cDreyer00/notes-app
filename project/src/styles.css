@@ -34,6 +34,73 @@ body {
   display: none !important;
 }
 
+/* --------------------------------------------------------------------------
+   Bordas de redimensionamento
+   -------------------------------------------------------------------------- */
+
+.rz {
+  position: fixed;
+  z-index: 10;
+}
+
+.rz-n,
+.rz-s {
+  left: 10px;
+  right: 10px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.rz-w,
+.rz-e {
+  top: 10px;
+  bottom: 10px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.rz-n {
+  top: 0;
+}
+.rz-s {
+  bottom: 0;
+}
+.rz-w {
+  left: 0;
+}
+.rz-e {
+  right: 0;
+}
+
+.rz-nw,
+.rz-ne,
+.rz-sw,
+.rz-se {
+  width: 12px;
+  height: 12px;
+}
+
+.rz-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+.rz-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+.rz-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+.rz-se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
 /* Janela sem decoração: a faixa do topo e o rodapé são as áreas de arraste. */
 .drag-strip {
   height: 18px;
@@ -200,6 +267,9 @@ kbd {
 .overlay {
   position: fixed;
   inset: 0;
+  /* Acima das bordas de redimensionamento: com um diálogo aberto, a única
+     interação possível é responder a ele. */
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -281,6 +351,7 @@ button.ghost {
 
 .toast {
   position: fixed;
+  z-index: 20;
   left: 50%;
   bottom: 44px;
   transform: translateX(-50%);

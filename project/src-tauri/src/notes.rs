@@ -65,7 +65,8 @@ fn find_in_trash(dir: &Path, id: &str) -> Result<Option<PathBuf>, String> {
 
     let legacy = format!("{id}.md");
     let suffix = format!("__{id}.md");
-    let entries = fs::read_dir(&trash).map_err(|e| format!("não foi possível ler {trash:?}: {e}"))?;
+    let entries =
+        fs::read_dir(&trash).map_err(|e| format!("não foi possível ler {trash:?}: {e}"))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -96,8 +97,7 @@ fn modified_millis(path: &Path) -> u128 {
 /// precisa do texto inteiro. Ordenadas da mais recente para a mais antiga.
 pub fn list(dir: &Path) -> Result<Vec<Note>, String> {
     ensure_dir(dir)?;
-    let entries =
-        fs::read_dir(dir).map_err(|e| format!("não foi possível ler {dir:?}: {e}"))?;
+    let entries = fs::read_dir(dir).map_err(|e| format!("não foi possível ler {dir:?}: {e}"))?;
 
     let mut notes = Vec::new();
     for entry in entries.flatten() {
@@ -179,13 +179,12 @@ fn trash_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
         return Ok(Vec::new());
     }
 
-    let entries = fs::read_dir(&trash).map_err(|e| format!("não foi possível ler {trash:?}: {e}"))?;
+    let entries =
+        fs::read_dir(&trash).map_err(|e| format!("não foi possível ler {trash:?}: {e}"))?;
     Ok(entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md")
-        })
+        .filter(|path| path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md"))
         .collect())
 }
 
@@ -247,8 +246,7 @@ pub fn move_all(from: &Path, to: &Path) -> Result<usize, String> {
     }
     ensure_dir(to)?;
 
-    let entries =
-        fs::read_dir(from).map_err(|e| format!("não foi possível ler {from:?}: {e}"))?;
+    let entries = fs::read_dir(from).map_err(|e| format!("não foi possível ler {from:?}: {e}"))?;
     let mut moved = 0;
     for entry in entries.flatten() {
         let path = entry.path();
