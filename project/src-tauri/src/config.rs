@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
-/// Combinações de teclas, no formato de accelerator do Tauri ("Control+Alt+N").
+/// Combinações de teclas, no formato de accelerator do Tauri ("Control+Alt+F").
 /// Apenas `toggle_app` é registrado no sistema operacional; os demais são
 /// tratados no frontend e só valem com a janela em foco.
 /// `default` no container é o que permite acrescentar comandos sem invalidar o
@@ -21,13 +21,13 @@ pub struct Shortcuts {
 
 impl Default for Shortcuts {
     fn default() -> Self {
+        // Mnemônicos em português: Escrever, Deletar, Fixar.
         Self {
-            toggle_app: "Control+Alt+N".into(),
+            toggle_app: "Control+Alt+F".into(),
             toggle_view: "Control+Tab".into(),
-            new_note: "Control+M".into(),
-            delete_note: "Control+Delete".into(),
-            // Shift evita o Ctrl+P, que o WebView2 entende como imprimir.
-            toggle_pin: "Control+Shift+P".into(),
+            new_note: "Control+E".into(),
+            delete_note: "Control+D".into(),
+            toggle_pin: "Control+F".into(),
         }
     }
 }

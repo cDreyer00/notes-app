@@ -6,7 +6,7 @@ O princípio que guia todas as decisões: **o usuário só se preocupa em escrev
 
 ## Como funciona
 
-Você aperta `Ctrl+Alt+N` de qualquer lugar do sistema, a janela aparece, você escreve, e aperta `Esc`. Pronto — está salvo. Não há botão de salvar, campo de título nem escolha de pasta.
+Você aperta `Ctrl+Alt+F` de qualquer lugar do sistema, a janela aparece, você escreve, e aperta `Esc`. Pronto — está salvo. Não há botão de salvar, campo de título nem escolha de pasta.
 
 Uma nota aberta e deixada em branco é descartada sozinha, então abrir o app por engano não deixa rastro.
 
@@ -16,11 +16,11 @@ Todos são editáveis nas configurações.
 
 | Ação | Padrão | Escopo |
 |---|---|---|
-| Abrir/ocultar o app | `Ctrl+Alt+N` | global |
+| Abrir/ocultar o app | `Ctrl+Alt+F` | global |
 | Alternar entre a grid e a nota atual | `Ctrl+Tab` | no app |
-| Nova nota | `Ctrl+M` | no app |
-| Deletar a nota atual | `Ctrl+Delete` | no app |
-| Fixar a janela | `Ctrl+Shift+P` | no app |
+| Nova nota | `Ctrl+E` | no app |
+| Deletar a nota atual | `Ctrl+D` | no app |
+| Fixar a janela | `Ctrl+F` | no app |
 
 `Esc` é fixo e significa sempre "um passo atrás": na nota, volta para a grid; na grid, esconde o app.
 
