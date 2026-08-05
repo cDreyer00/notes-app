@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Notes — Configurações</title>
+    <script type="module" src="/src/settings.ts" defer></script>
+  </head>
+
+  <body class="settings-body">
+    <main class="settings">
+      <section class="settings-block">
+        <h2>Atalhos</h2>
+        <p class="settings-note">
+          Clique em um campo e pressione a combinação desejada.
+        </p>
+
+        <div class="field">
+          <label for="sc-toggleApp">Abrir/ocultar o app</label>
+          <button id="sc-toggleApp" type="button" class="key-input"></button>
+          <span class="scope">global</span>
+        </div>
+
+        <div class="field">
+          <label for="sc-toggleView">Alternar notas/nota atual</label>
+          <button id="sc-toggleView" type="button" class="key-input"></button>
+          <span class="scope">no app</span>
+        </div>
+
+        <div class="field">
+          <label for="sc-newNote">Nova nota</label>
+          <button id="sc-newNote" type="button" class="key-input"></button>
+          <span class="scope">no app</span>
+        </div>
+
+        <div class="field">
+          <label for="sc-deleteNote">Deletar nota atual</label>
+          <button id="sc-deleteNote" type="button" class="key-input"></button>
+          <span class="scope">no app</span>
+        </div>
+      </section>
+
+      <section class="settings-block">
+        <h2>Armazenamento</h2>
+        <div class="field field-wide">
+          <input id="notes-dir" type="text" readonly />
+          <button id="pick-dir" type="button">Escolher…</button>
+        </div>
+      </section>
+
+      <section class="settings-block">
+        <h2>Lixeira</h2>
+        <div class="field">
+          <label for="trash-retention">Manter notas deletadas por</label>
+          <select id="trash-retention">
+            <option value="1">1 dia</option>
+            <option value="7">1 semana</option>
+            <option value="30">1 mês</option>
+            <option value="365">1 ano</option>
+            <option value="0">Nunca apagar</option>
+          </select>
+          <span class="scope"></span>
+        </div>
+        <div class="field field-wide">
+          <span id="trash-count" class="settings-note"></span>
+          <button id="empty-trash" type="button" class="danger">
+            Esvaziar agora
+          </button>
+        </div>
+      </section>
+
+      <section class="settings-block">
+        <label class="checkbox">
+          <input id="autostart" type="checkbox" />
+          <span>Iniciar junto com o Windows</span>
+        </label>
+      </section>
+
+      <p id="settings-error" class="settings-error hidden"></p>
+
+      <div class="settings-actions">
+        <button id="close" type="button">Fechar</button>
+        <button id="save" type="button" class="primary">Salvar</button>
+      </div>
+    </main>
+
+    <div id="empty-dialog" class="overlay hidden">
+      <div class="dialog">
+        <p class="dialog-title">Esvaziar a lixeira?</p>
+        <p class="dialog-hint" id="empty-detail"></p>
+        <div class="dialog-actions">
+          <button id="empty-cancel" type="button">Cancelar</button>
+          <button id="empty-confirm" type="button" class="danger">
+            Apagar de vez
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="move-dialog" class="overlay hidden">
+      <div class="dialog">
+        <p class="dialog-title">Levar as notas existentes?</p>
+        <p class="dialog-hint" id="move-detail"></p>
+        <div class="dialog-actions column">
+          <button id="move-yes" type="button" class="primary">
+            Mover as notas para a nova pasta
+          </button>
+          <button id="move-no" type="button">
+            Apenas usar a nova pasta
+          </button>
+          <button id="move-cancel" type="button" class="ghost">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

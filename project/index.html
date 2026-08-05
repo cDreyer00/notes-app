@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Notes</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="drag-strip" data-drag></div>
+
+    <section id="view-editor" class="view">
+      <textarea
+        id="editor"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="Escreva…"
+      ></textarea>
+    </section>
+
+    <section id="view-grid" class="view hidden">
+      <div class="search-bar">
+        <input
+          id="search"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="Buscar em todas as notas…"
+        />
+      </div>
+      <div id="grid" class="grid"></div>
+      <p id="grid-empty" class="grid-empty hidden">Nenhuma nota por aqui.</p>
+    </section>
+
+    <footer id="hints" class="hints" data-drag></footer>
+
+    <div id="confirm" class="overlay hidden">
+      <div class="dialog">
+        <p class="dialog-title">Deletar esta nota?</p>
+        <p class="dialog-hint">Enter confirma · Esc cancela</p>
+        <div class="dialog-actions">
+          <button id="confirm-cancel" type="button">Cancelar</button>
+          <button id="confirm-ok" type="button" class="danger">Deletar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden">
+      <span>Nota deletada</span>
+      <button id="undo" type="button">Desfazer</button>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+# Artefatos de build ficam ignorados pelos .gitignore de project/ e src-tauri/.
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editores
+.idea/
+*.swp
