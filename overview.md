@@ -48,7 +48,10 @@ Todos os atalhos são editáveis pelo usuário nas configurações. Eles se divi
 - Notas exibidas como **cards em grid**, estilo post-it, com **scroll vertical**.
 - Cada card mostra as **primeiras linhas** do conteúdo e uma marcação de tempo discreta (ex.: "há 5 min", "ontem").
 - Ordenação padrão: **modificadas mais recentemente primeiro**.
-- Navegável por teclado (setas + Enter para abrir).
+- Navegável por teclado: as **setas** movem a seleção pelos cards e **Enter** abre.
+  - Com o foco na busca, ← e → percorrem o texto digitado; ao chegar na ponta, voltam a
+    navegar pela grid. Sem isso, andar de lado seria impossível — o foco começa sempre na
+    busca.
 - **Barra de pesquisa no topo:** busca no conteúdo completo de todas as notas e reordena a grid por relevância, em tempo real.
   - Ignora acentuação e maiúsculas/minúsculas.
   - Ranking: match nas primeiras linhas pesa mais que no corpo; recência desempata.

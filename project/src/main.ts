@@ -301,6 +301,22 @@ function showUndo(id: string): void {
 // Teclado
 // ---------------------------------------------------------------------------
 
+/**
+ * No campo de busca as setas laterais pertencem ao cursor de texto — mas só
+ * enquanto houver texto para percorrer. Na ponta elas voltam a navegar pela
+ * grid, senão andar de lado entre os cards seria impossível com o foco na
+ * busca, que é onde ele sempre começa.
+ */
+function sideArrowNavigates(toRight: boolean): boolean {
+  if (document.activeElement !== searchEl) return true;
+
+  const { selectionStart, selectionEnd, value } = searchEl;
+  if (selectionStart === null || selectionEnd === null) return true;
+  if (selectionStart !== selectionEnd) return false;
+
+  return toRight ? selectionStart >= value.length : selectionStart <= 0;
+}
+
 function handleGridKeys(event: KeyboardEvent): void {
   const inSearch = document.activeElement === searchEl;
 
@@ -314,13 +330,12 @@ function handleGridKeys(event: KeyboardEvent): void {
       moveSelection(-columnCount());
       break;
     case "ArrowRight":
-      // No campo de busca as setas laterais pertencem ao cursor de texto.
-      if (inSearch) return;
+      if (!sideArrowNavigates(true)) return;
       event.preventDefault();
       moveSelection(1);
       break;
     case "ArrowLeft":
-      if (inSearch) return;
+      if (!sideArrowNavigates(false)) return;
       event.preventDefault();
       moveSelection(-1);
       break;
@@ -398,9 +413,11 @@ function renderHints(): void {
   const entries: Array<[string, string]> =
     view === "grid"
       ? [
+          // Navegar e abrir vêm primeiro: é o que se faz na grid, e sem a dica
+          // ninguém descobre que as setas funcionam.
+          ["↑↓←→", "navegar"],
+          ["Enter", "abrir"],
           [prettyAccelerator(shortcuts.newNote), "nova"],
-          [prettyAccelerator(shortcuts.toggleView), "voltar"],
-          [prettyAccelerator(shortcuts.deleteNote), "deletar"],
           ["Esc", "ocultar"],
         ]
       : [

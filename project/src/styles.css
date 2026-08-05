@@ -198,8 +198,11 @@ body {
   background: var(--surface-hover);
 }
 
+/* Navegando pelo teclado, a seleção precisa saltar aos olhos. */
 .card.selected {
   border-color: var(--accent);
+  background: var(--surface-hover);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .card-body {
