@@ -20,6 +20,7 @@ Todos são editáveis nas configurações.
 | Alternar entre a grid e a nota atual | `Ctrl+Tab` | no app |
 | Nova nota | `Ctrl+M` | no app |
 | Deletar a nota atual | `Ctrl+Delete` | no app |
+| Fixar a janela | `Ctrl+Shift+P` | no app |
 
 `Esc` é fixo e significa sempre "um passo atrás": na nota, volta para a grid; na grid, esconde o app.
 
@@ -31,7 +32,8 @@ Todos são editáveis nas configurações.
 - **Grid de notas** em cards estilo post-it, com as primeiras linhas e uma marca de tempo ("há 5 min", "ontem"), navegável pelas setas.
 - **Busca em tempo real** no conteúdo completo de todas as notas, ignorando acentos e maiúsculas. Match nas primeiras linhas pesa mais que no corpo; a nota mais recente desempata.
 - **Lixeira** — deletar pede confirmação e ainda oferece *desfazer* por 5 segundos. A nota vai para `.trash/` e é apagada de vez quando vence o prazo de retenção (1 dia a 1 ano, ou nunca).
-- **A janela lembra onde você a deixou.** Dois toques rápidos no atalho recentralizam. Clicar fora esconde o app.
+- **A janela lembra onde você a deixou**, em posição e tamanho. Dois toques rápidos no atalho recentralizam. Clicar fora esconde o app.
+- **Fixar** desliga o "esconder ao perder o foco", para consultar uma nota trabalhando em outra janela. `Esc` e o atalho de abrir/ocultar continuam funcionando — o pino desliga só o gesto implícito.
 - **Inicia junto com o Windows**, ligado por padrão.
 
 ## Onde ficam as notas

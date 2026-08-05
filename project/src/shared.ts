@@ -12,6 +12,7 @@ export interface Shortcuts {
   toggleView: string;
   newNote: string;
   deleteNote: string;
+  togglePin: string;
 }
 
 export interface Config {
@@ -24,6 +25,8 @@ export interface Config {
   windowSize: [number, number] | null;
   /** Dias de permanência na lixeira; `0` significa "nunca limpar". */
   trashRetentionDays: number;
+  /** Janela fixada: perder o foco deixa de esconder o app. */
+  pinned: boolean;
 }
 
 /** Bordas aceitas por `startResizeDragging`; o tipo não é exportado pela API. */
@@ -59,6 +62,7 @@ export const api = {
   hideApp: () => invoke<void>("hide_app"),
   beginDrag: () => invoke<void>("begin_drag"),
   beginResize: () => invoke<void>("begin_resize"),
+  setPinned: (pinned: boolean) => invoke<Config>("set_pinned", { pinned }),
   openSettings: () => invoke<void>("open_settings"),
   closeSettings: () => invoke<void>("close_settings"),
   quitApp: () => invoke<void>("quit_app"),

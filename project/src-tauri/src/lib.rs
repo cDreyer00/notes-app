@@ -35,6 +35,12 @@ fn mark_drag(app: &AppHandle) {
     }
 }
 
+/// Janela fixada ignora o blur. Lido do disco a cada evento — o arquivo é
+/// minúsculo e isso evita um segundo lugar onde o estado poderia divergir.
+fn is_pinned(app: &AppHandle) -> bool {
+    config::load(app).map(|cfg| cfg.pinned).unwrap_or(false)
+}
+
 fn is_dragging(app: &AppHandle) -> bool {
     app.try_state::<DragState>()
         .and_then(|state| state.0.lock().ok().and_then(|last| *last))
@@ -334,6 +340,17 @@ fn begin_resize(app: AppHandle) {
     mark_drag(&app);
 }
 
+/// Fixa ou solta a janela. Fica na config porque é preferência, não estado
+/// momentâneo: quem fixou espera continuar fixado depois de reabrir o app.
+#[tauri::command]
+fn set_pinned(app: AppHandle, pinned: bool) -> Result<Config, String> {
+    let mut cfg = config::load(&app)?;
+    cfg.pinned = pinned;
+    config::save(&app, &cfg)?;
+    let _ = app.emit("config-changed", &cfg);
+    Ok(cfg)
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
@@ -438,6 +455,7 @@ pub fn run() {
             hide_app,
             begin_drag,
             begin_resize,
+            set_pinned,
             open_settings,
             close_settings,
             quit_app
@@ -472,7 +490,7 @@ pub fn run() {
                 window.on_window_event(move |event| match event {
                     // Clicar fora esconde o app; o autosave garante que nada se perde.
                     WindowEvent::Focused(false) => {
-                        if !is_dragging(&win_handle) {
+                        if !is_dragging(&win_handle) && !is_pinned(&win_handle) {
                             hide_main(&win_handle);
                         }
                     }

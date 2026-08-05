@@ -373,6 +373,12 @@ function handleKeyDown(event: KeyboardEvent): void {
     return;
   }
 
+  if (matchesAccelerator(event, shortcuts.togglePin)) {
+    event.preventDefault();
+    void togglePin();
+    return;
+  }
+
   if (event.key === "Escape") {
     event.preventDefault();
     if (view === "editor") void showGrid();
@@ -389,7 +395,7 @@ function handleKeyDown(event: KeyboardEvent): void {
 
 function renderHints(): void {
   const { shortcuts } = config;
-  const entries =
+  const entries: Array<[string, string]> =
     view === "grid"
       ? [
           [prettyAccelerator(shortcuts.newNote), "nova"],
@@ -410,6 +416,27 @@ function renderHints(): void {
     kbd.textContent = keys;
     item.append(kbd, document.createTextNode(` ${label}`));
     hintsEl.append(item);
+  }
+
+  // O pino precisa de sinal visível: sem ele, a janela que não some mais
+  // parece defeito em vez de escolha.
+  const pin = document.createElement("span");
+  pin.className = config.pinned ? "hint-pin active" : "hint-pin";
+  const pinKey = document.createElement("kbd");
+  pinKey.textContent = prettyAccelerator(shortcuts.togglePin);
+  pin.append(
+    pinKey,
+    document.createTextNode(config.pinned ? " fixada" : " fixar"),
+  );
+  hintsEl.append(pin);
+}
+
+async function togglePin(): Promise<void> {
+  try {
+    config = await api.setPinned(!config.pinned);
+    renderHints();
+  } catch (error) {
+    console.error("falha ao fixar a janela", error);
   }
 }
 

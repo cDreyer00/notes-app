@@ -250,6 +250,20 @@ body {
   pointer-events: none;
 }
 
+/* O pino fica na ponta direita, separado dos atalhos de nota. */
+.hint-pin {
+  margin-left: auto;
+}
+
+.hint-pin.active {
+  color: var(--accent);
+}
+
+.hint-pin.active kbd {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 kbd {
   padding: 1px 5px;
   border: 1px solid var(--border);

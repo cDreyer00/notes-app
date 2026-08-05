@@ -6,13 +6,17 @@ use tauri::{AppHandle, Manager};
 /// Combinações de teclas, no formato de accelerator do Tauri ("Control+Alt+N").
 /// Apenas `toggle_app` é registrado no sistema operacional; os demais são
 /// tratados no frontend e só valem com a janela em foco.
+/// `default` no container é o que permite acrescentar comandos sem invalidar o
+/// settings.json de quem já usa o app: campo ausente cai no padrão em vez de
+/// derrubar a leitura inteira e zerar as preferências.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Shortcuts {
     pub toggle_app: String,
     pub toggle_view: String,
     pub new_note: String,
     pub delete_note: String,
+    pub toggle_pin: String,
 }
 
 impl Default for Shortcuts {
@@ -22,6 +26,8 @@ impl Default for Shortcuts {
             toggle_view: "Control+Tab".into(),
             new_note: "Control+M".into(),
             delete_note: "Control+Delete".into(),
+            // Shift evita o Ctrl+P, que o WebView2 entende como imprimir.
+            toggle_pin: "Control+Shift+P".into(),
         }
     }
 }
@@ -39,6 +45,8 @@ pub struct Config {
     pub window_size: Option<(u32, u32)>,
     /// Dias que uma nota deletada permanece na lixeira. `0` significa "nunca limpar".
     pub trash_retention_days: u32,
+    /// Janela fixada: perder o foco deixa de esconder o app.
+    pub pinned: bool,
 }
 
 impl Default for Config {
@@ -50,6 +58,7 @@ impl Default for Config {
             window_pos: None,
             window_size: None,
             trash_retention_days: 30,
+            pinned: false,
         }
     }
 }

@@ -10,6 +10,9 @@ use o @overview.md como ponto de partida
 - Sempre pesquise documentações atualizadas, ferramentas atualizam constantemente e devem sempre ser revisadas.
 - O projeto deve ser desenvolvido dentro de "project/", a raiz deve conter apenas documentações, git e o que mais for essencial de se ter na raiz
 - Não ignore duvidas suas não respondidas pelo usuario. Se algo ainda esta incerto ou se o usuario não esclareceu todas suas duvidas atuais, insista no dialogo até tudo estar esclarecido para ambos os lados
+- **Atualize o `overview.md` sempre que pertinente**, na mesma leva da mudança. Ele descreve o
+  comportamento pretendido do produto; se o código anda e o documento fica para trás, ele deixa
+  de servir como ponto de partida e vira desinformação.
 
 ---
 
@@ -56,6 +59,14 @@ project/
   Trocar por índice só se a quantidade de notas passar da casa dos milhares.
 - **Config e notas são lidas do disco a cada comando**, sem estado global em Rust:
   os arquivos são minúsculos e isso elimina dessincronização entre janelas.
+- **`Shortcuts` tem `#[serde(default)]` no container.** Sem isso, acrescentar um comando
+  invalidaria o `settings.json` existente e zeraria todas as preferências do usuário.
+- **Arrastar e redimensionar passam pelo Rust antes de começar** (`begin_drag`/`begin_resize`),
+  que marca a interação. O gesto tira o foco do webview e o `Focused(false)` esconderia o app
+  no meio do movimento. As bordas nativas não servem: elas não geram evento no webview.
+- **O resize é disparado pelo frontend** porque `start_resize_dragging` não existe no
+  `WebviewWindow` do Rust — só no `Window` interno, inacessível, e o `ResizeDirection` nem é
+  reexportado pelo crate.
 
 ## Comandos
 

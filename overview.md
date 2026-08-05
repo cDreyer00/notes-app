@@ -32,6 +32,7 @@ Todos os atalhos são editáveis pelo usuário nas configurações. Eles se divi
 | Alternar visão | Alterna entre a **grid de notas** e a **última nota em edição**. |
 | Nova nota | Cria uma nota vazia e foca o cursor nela. |
 | Deletar nota atual | Pede confirmação; ao confirmar, volta para a grid. |
+| Fixar janela | Liga/desliga o modo fixado (ver abaixo). |
 
 > **Por que só um atalho global:** registrar todos no SO faria o Notes sequestrar combinações de outros programas. Apenas a invocação precisa funcionar de fora do app.
 
@@ -108,7 +109,16 @@ Duas seções, nada além disso:
     de reaparecer invisível.
 - **Duplo acionamento do atalho:** dois toques rápidos no atalho de abrir/ocultar recentralizam
   a janela em vez de abrir e fechar. O gesto também redefine a posição salva.
+- **Tamanho da janela:** redimensionável pelas bordas e cantos; o tamanho é salvo junto com a
+  posição.
 - **Clicar fora da janela:** esconde o app. O autosave garante que nada se perde.
+- **Janela fixada:** enquanto fixada, perder o foco **não** esconde o app — dá para consultar
+  uma nota trabalhando em outra janela. `Esc` e o atalho de abrir/ocultar continuam
+  escondendo: o pino desliga só o gesto implícito, nunca o comando explícito.
+  - O estado é **preferência, não estado momentâneo**: sobrevive a esconder, reabrir e
+    reiniciar o app.
+  - O rodapé mostra o pino aceso. Sem sinal visível, uma janela que não some mais parece
+    defeito em vez de escolha.
 - **`Esc`:** sempre "um passo atrás" — na nota, volta para a grid; na grid, esconde o app.
 - **Iniciar junto com o Windows:** ligado por padrão. Um app que só existe se estiver rodando não pode depender do usuário lembrar de abri-lo.
 - **Markdown:** as notas são salvas em `.md` pelo formato aberto, mas a edição é **texto puro**, sem renderização. Preview e parser adicionariam modos e decisões de estilo que brigam com a proposta de velocidade.
