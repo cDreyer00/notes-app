@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Instaladores trazidos para cá pelo `npm run release`.
+release
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
