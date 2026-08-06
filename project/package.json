@@ -7,6 +7,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc && vite build",
+    "release": "tauri build && node scripts/collect-installer.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
