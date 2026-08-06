@@ -20,6 +20,16 @@ export interface Shortcuts {
   newNote: string;
   deleteNote: string;
   togglePin: string;
+  detachNote: string;
+  /** Só vale dentro de uma janela de nota destacada — na principal é ignorado. */
+  closeWindow: string;
+}
+
+/** Uma janela de nota destacada da grid, com sua posição e tamanho próprios. */
+export interface DetachedWindow {
+  noteId: string;
+  pos: [number, number] | null;
+  size: [number, number] | null;
 }
 
 export interface Config {
@@ -32,8 +42,10 @@ export interface Config {
   windowSize: [number, number] | null;
   /** Dias de permanência na lixeira; `0` significa "nunca limpar". */
   trashRetentionDays: number;
-  /** Janela fixada: perder o foco deixa de esconder o app. */
+  /** Janela fixada: perder o foco deixa de esconder o app inteiro. */
   pinned: boolean;
+  /** Notas atualmente destacadas em janela própria. */
+  detached: DetachedWindow[];
 }
 
 /** Bordas aceitas por `startResizeDragging`; o tipo não é exportado pela API. */
@@ -74,7 +86,17 @@ export const api = {
   openSettings: () => invoke<void>("open_settings"),
   closeSettings: () => invoke<void>("close_settings"),
   quitApp: () => invoke<void>("quit_app"),
+  /** `x`/`y` vêm de um drop fora da grid; sem eles a janela nasce centralizada. */
+  detachNote: (id: string, x?: number, y?: number) =>
+    invoke<void>("detach_note", { id, x, y }),
+  undetachNote: (id: string) => invoke<void>("undetach_note", { id }),
+  /** Foca a principal e pede que ela execute `action` por conta própria —
+   * usado pelas janelas de nota destacada, onde só deletar é local. */
+  focusMain: (action: RemoteCommand) => invoke<void>("focus_main", { action }),
 };
+
+/** Comandos que uma janela de nota destacada redireciona pra principal. */
+export type RemoteCommand = "newNote" | "toggleView" | "togglePin";
 
 // ---------------------------------------------------------------------------
 // Atalhos

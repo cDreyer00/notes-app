@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { createAutosave, createDeleteConfirm, createDiskQueue } from "./editor-core";
 import {
   api,
   IS_DEV,
@@ -24,7 +25,6 @@ const hintsEl = document.querySelector<HTMLElement>("#hints")!;
 const confirmEl = document.querySelector<HTMLElement>("#confirm")!;
 const toastEl = document.querySelector<HTMLElement>("#toast")!;
 
-const SAVE_DEBOUNCE_MS = 400;
 const UNDO_WINDOW_MS = 5000;
 
 let config: Config;
@@ -33,82 +33,38 @@ let visibleNotes: Note[] = [];
 let view: View = "editor";
 let currentId: string | null = null;
 let selectedIndex = 0;
-let pendingDeleteId: string | null = null;
-let saveTimer: number | undefined;
 let undoTimer: number | undefined;
+/** Ids das notas atualmente abertas em janela própria. */
+let detachedIds = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Persistência
 // ---------------------------------------------------------------------------
 
-function scheduleSave(): void {
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => void flushSave(), SAVE_DEBOUNCE_MS);
-}
+const disk = createDiskQueue();
 
-/**
- * Gravação, exclusão e restauração passam por uma fila única. Sem isso, um
- * autosave em voo terminaria depois do delete e recriaria o arquivo que acabou
- * de ir para a lixeira.
- */
-let diskQueue: Promise<unknown> = Promise.resolve();
-
-function enqueue<T>(task: () => Promise<T>): Promise<T> {
-  const result = diskQueue.then(task, task);
-  diskQueue = result.catch(() => undefined);
-  return result;
-}
-
-/**
- * O arquivo só nasce quando existe texto. Criar antes deixaria um `.md` vazio
- * no disco toda vez que o app fosse aberto e fechado sem se escrever nada.
- */
-async function flushSave(): Promise<void> {
-  window.clearTimeout(saveTimer);
-
-  // Alvo e conteúdo são fixados agora; a fila pode executar isto depois de o
-  // usuário já ter trocado de nota.
-  const content = editorEl.value;
-  let targetId = currentId;
-
-  await enqueue(async () => {
-    try {
-      if (!targetId) {
-        if (content.trim() === "") return;
-        const created = await api.createNote();
-        targetId = created.id;
-        notes.unshift(created);
-        if (currentId === null) currentId = created.id;
-      }
-
-      const note = notes.find((item) => item.id === targetId);
-      if (note && note.content === content) return;
-
-      const modified = await api.saveNote(targetId, content);
-      if (note) {
-        note.content = content;
-        note.modified = Number(modified);
-      }
-    } catch (error) {
-      console.error("falha ao salvar a nota", error);
+const autosave = createAutosave(editorEl, {
+  getCurrentId: () => currentId,
+  setCurrentId: (id) => {
+    currentId = id;
+  },
+  getExisting: (id) => notes.find((note) => note.id === id),
+  onSaved: (note) => {
+    const existing = notes.find((item) => item.id === note.id);
+    if (existing) {
+      existing.content = note.content;
+      existing.modified = note.modified;
+    } else {
+      notes.unshift(note);
     }
-  });
-}
+  },
+  onDiscarded: (id) => {
+    notes = notes.filter((note) => note.id !== id);
+  },
+  enqueue: disk.enqueue,
+});
 
-/** Nota existente que foi esvaziada some da grid em vez de virar card em branco. */
-async function discardIfEmpty(): Promise<void> {
-  if (!currentId) return;
-  if (editorEl.value.trim() !== "") return;
-
-  const id = currentId;
-  currentId = null;
-  notes = notes.filter((note) => note.id !== id);
-  try {
-    await enqueue(() => api.purgeNote(id));
-  } catch (error) {
-    console.error("falha ao descartar nota vazia", error);
-  }
-}
+const { scheduleSave, flushSave, discardIfEmpty } = autosave;
 
 // ---------------------------------------------------------------------------
 // Navegação entre as views
@@ -159,6 +115,20 @@ async function startNewNote(): Promise<void> {
   openEditor(null);
 }
 
+/** Destaca a nota em edição numa janela própria e volta pra grid. */
+async function detachCurrent(): Promise<void> {
+  if (view !== "editor") return;
+
+  // Grava antes: uma nota recém-digitada ainda pode não ter arquivo, e sem
+  // `id` não há o que destacar.
+  await flushSave();
+  const id = currentId;
+  if (!id) return;
+
+  await api.detachNote(id);
+  await showGrid();
+}
+
 async function openSelected(): Promise<void> {
   const note = visibleNotes[selectedIndex];
   if (note) openEditor(note);
@@ -173,8 +143,10 @@ function renderGrid(): void {
   gridEl.replaceChildren();
 
   for (const note of visibleNotes) {
+    const isDetached = detachedIds.has(note.id);
+
     const card = document.createElement("div");
-    card.className = "card";
+    card.className = isDetached ? "card card-detached" : "card";
     card.dataset.id = note.id;
 
     const body = document.createElement("p");
@@ -183,10 +155,23 @@ function renderGrid(): void {
 
     const time = document.createElement("span");
     time.className = "card-time";
-    time.textContent = relativeTime(note.modified);
+    time.textContent = isDetached ? "em outra janela" : relativeTime(note.modified);
 
     card.append(body, time);
-    card.addEventListener("click", () => openEditor(note));
+    // Nota destacada já está aberta em janela própria: clicar aqui recolhe
+    // ela de volta, em vez de abrir mais uma vez dentro da principal.
+    card.addEventListener("click", () => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
+      if (isDetached) void api.undetachNote(note.id);
+      else openEditor(note);
+    });
+    // Uma nota já destacada não arrasta pra virar outra janela — ela já é uma.
+    if (!isDetached) {
+      card.addEventListener("mousedown", (event) => beginCardDrag(note, event));
+    }
     gridEl.append(card);
   }
 
@@ -196,6 +181,93 @@ function renderGrid(): void {
 
   gridEmptyEl.classList.toggle("hidden", visibleNotes.length > 0);
   updateSelection();
+}
+
+// ---------------------------------------------------------------------------
+// Arrastar um card pra fora vira janela destacada
+// ---------------------------------------------------------------------------
+
+/** Abaixo disso é clique; acima, arraste. */
+const DRAG_THRESHOLD_PX = 6;
+
+let dragNote: Note | null = null;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragActive = false;
+let dragBounds: { x: number; y: number; width: number; height: number } | null = null;
+let ghostEl: HTMLElement | null = null;
+/** Um arraste que terminou não pode também disparar o `click` nativo do mouseup. */
+let suppressNextClick = false;
+
+function positionGhost(x: number, y: number): void {
+  if (!ghostEl) return;
+  ghostEl.style.left = `${x}px`;
+  ghostEl.style.top = `${y}px`;
+}
+
+function createGhost(note: Note, x: number, y: number): void {
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.textContent = note.content.trim() || "(vazia)";
+  document.body.append(ghost);
+  ghostEl = ghost;
+  positionGhost(x, y);
+}
+
+function beginCardDrag(note: Note, event: MouseEvent): void {
+  if (event.button !== 0) return;
+  dragNote = note;
+  dragStartX = event.clientX;
+  dragStartY = event.clientY;
+  dragActive = false;
+  window.addEventListener("mousemove", onCardDragMove);
+  window.addEventListener("mouseup", onCardDragEnd);
+}
+
+async function onCardDragMove(event: MouseEvent): Promise<void> {
+  const note = dragNote;
+  if (!note) return;
+
+  if (!dragActive) {
+    const moved = Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY);
+    if (moved < DRAG_THRESHOLD_PX) return;
+
+    dragActive = true;
+    const win = getCurrentWindow();
+    const [position, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+    // O arraste não move a janela principal; os limites capturados agora
+    // continuam valendo até o mouseup.
+    dragBounds = { x: position.x, y: position.y, width: size.width, height: size.height };
+    createGhost(note, event.clientX, event.clientY);
+  }
+
+  positionGhost(event.clientX, event.clientY);
+}
+
+function onCardDragEnd(event: MouseEvent): void {
+  window.removeEventListener("mousemove", onCardDragMove);
+  window.removeEventListener("mouseup", onCardDragEnd);
+
+  const note = dragNote;
+  const wasActive = dragActive;
+  const bounds = dragBounds;
+  ghostEl?.remove();
+  ghostEl = null;
+  dragNote = null;
+  dragActive = false;
+  dragBounds = null;
+
+  if (!note || !wasActive) return;
+  suppressNextClick = true;
+
+  const outside =
+    bounds !== null &&
+    (event.screenX < bounds.x ||
+      event.screenY < bounds.y ||
+      event.screenX > bounds.x + bounds.width ||
+      event.screenY > bounds.y + bounds.height);
+
+  if (outside) void api.detachNote(note.id, event.screenX, event.screenY);
 }
 
 function updateSelection(): void {
@@ -233,47 +305,41 @@ function moveSelection(delta: number): void {
 // Exclusão
 // ---------------------------------------------------------------------------
 
+const deleteConfirm = createDeleteConfirm(
+  {
+    overlay: confirmEl,
+    confirmButton: document.querySelector<HTMLButtonElement>("#confirm-ok")!,
+    cancelButton: document.querySelector<HTMLButtonElement>("#confirm-cancel")!,
+  },
+  async (id) => {
+    autosave.clearScheduled();
+
+    try {
+      await disk.enqueue(() => api.deleteNote(id));
+    } catch (error) {
+      console.error("falha ao deletar nota", error);
+      return;
+    }
+
+    // Esvaziar o editor é obrigatório: com texto e sem `currentId`, o autosave
+    // trataria o conteúdo como nota nova e recriaria a que acabou de ser deletada.
+    if (currentId === id) {
+      currentId = null;
+      editorEl.value = "";
+    }
+    notes = notes.filter((note) => note.id !== id);
+    await showGrid();
+    showUndo(id);
+  },
+);
+
 async function askDelete(): Promise<void> {
   // Grava antes de perguntar: uma nota recém-digitada ainda pode não ter
   // arquivo, e sem `id` não haveria o que deletar.
   if (view === "editor") await flushSave();
 
   const id = view === "editor" ? currentId : visibleNotes[selectedIndex]?.id;
-  if (!id) return;
-
-  pendingDeleteId = id;
-  confirmEl.classList.remove("hidden");
-  document.querySelector<HTMLButtonElement>("#confirm-ok")!.focus();
-}
-
-function closeConfirm(): void {
-  pendingDeleteId = null;
-  confirmEl.classList.add("hidden");
-}
-
-async function confirmDelete(): Promise<void> {
-  const id = pendingDeleteId;
-  if (!id) return;
-
-  window.clearTimeout(saveTimer);
-  closeConfirm();
-
-  try {
-    await enqueue(() => api.deleteNote(id));
-  } catch (error) {
-    console.error("falha ao deletar nota", error);
-    return;
-  }
-
-  // Esvaziar o editor é obrigatório: com texto e sem `currentId`, o autosave
-  // trataria o conteúdo como nota nova e recriaria a que acabou de ser deletada.
-  if (currentId === id) {
-    currentId = null;
-    editorEl.value = "";
-  }
-  notes = notes.filter((note) => note.id !== id);
-  await showGrid();
-  showUndo(id);
+  deleteConfirm.ask(id);
 }
 
 function showUndo(id: string): void {
@@ -285,7 +351,7 @@ function showUndo(id: string): void {
     window.clearTimeout(undoTimer);
     toastEl.classList.add("hidden");
     try {
-      await enqueue(() => api.restoreNote(id));
+      await disk.enqueue(() => api.restoreNote(id));
       notes = await api.listNotes();
       renderGrid();
     } catch (error) {
@@ -358,16 +424,7 @@ function handleGridKeys(event: KeyboardEvent): void {
 }
 
 function handleKeyDown(event: KeyboardEvent): void {
-  if (pendingDeleteId) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void confirmDelete();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      closeConfirm();
-    }
-    return;
-  }
+  if (deleteConfirm.handleKey(event)) return;
 
   const { shortcuts } = config;
 
@@ -392,6 +449,12 @@ function handleKeyDown(event: KeyboardEvent): void {
   if (matchesAccelerator(event, shortcuts.togglePin)) {
     event.preventDefault();
     void togglePin();
+    return;
+  }
+
+  if (matchesAccelerator(event, shortcuts.detachNote)) {
+    event.preventDefault();
+    void detachCurrent();
     return;
   }
 
@@ -474,10 +537,19 @@ async function togglePin(): Promise<void> {
 
 async function init(): Promise<void> {
   config = await api.getConfig();
+  detachedIds = new Set(config.detached.map((entry) => entry.noteId));
   notes = await api.listNotes();
 
   // Abre onde o usuário parou: o caso comum é querer continuar escrevendo.
-  openEditor(notes[0] ?? null);
+  // Mas não a mesma nota que já está aberta numa janela destacada — nesse
+  // caso a próxima mais recente entra no lugar, ou a grid se todas estiverem.
+  if (notes.length === 0) {
+    openEditor(null);
+  } else {
+    const initial = notes.find((note) => !detachedIds.has(note.id));
+    if (initial) openEditor(initial);
+    else await showGrid();
+  }
 
   editorEl.addEventListener("input", scheduleSave);
   searchEl.addEventListener("input", () => {
@@ -511,13 +583,6 @@ async function init(): Promise<void> {
     });
   }
 
-  document
-    .querySelector<HTMLButtonElement>("#confirm-ok")!
-    .addEventListener("click", () => void confirmDelete());
-  document
-    .querySelector<HTMLButtonElement>("#confirm-cancel")!
-    .addEventListener("click", closeConfirm);
-
   // A janela some ao perder o foco; grava antes que o debounce expire.
   window.addEventListener("blur", () => void flushSave());
   await listen("app-hiding", async () => {
@@ -533,6 +598,20 @@ async function init(): Promise<void> {
     config = event.payload;
     renderHints();
   });
+  await listen<string[]>("detached-changed", (event) => {
+    detachedIds = new Set(event.payload);
+    if (view === "grid") renderGrid();
+  });
+  // Comando que uma janela de nota destacada não podia executar sozinha —
+  // aqui é como se o atalho tivesse sido pressionado nesta janela mesmo.
+  await listen<"newNote" | "toggleView" | "togglePin">(
+    "remote-command",
+    (event) => {
+      if (event.payload === "newNote") void startNewNote();
+      else if (event.payload === "toggleView") void toggleView();
+      else if (event.payload === "togglePin") void togglePin();
+    },
+  );
 }
 
 void init();

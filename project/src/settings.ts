@@ -18,6 +18,8 @@ const SHORTCUT_KEYS: ShortcutKey[] = [
   "newNote",
   "deleteNote",
   "togglePin",
+  "detachNote",
+  "closeWindow",
 ];
 
 const dirInput = document.querySelector<HTMLInputElement>("#notes-dir")!;

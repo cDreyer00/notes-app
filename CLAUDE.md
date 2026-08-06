@@ -30,16 +30,21 @@ O comportamento do produto está em `overview.md`. Aqui fica só o lado técnico
 
 ```
 project/
-  index.html          janela de notas (editor + grid)
+  index.html          janela principal (editor + grid)
+  note.html           janela de uma nota destacada (só editor)
   settings.html       janela de configurações
   src/
     shared.ts         API de comandos, parser de atalhos, busca, tempo relativo
     shared.test.ts    testes das funções puras de shared.ts (Vitest)
-    main.ts           lógica da janela de notas
+    editor-core.ts    mecânica de editor compartilhada entre main.ts e note.ts
+                       (fila de disco, autosave, confirmação de exclusão)
+    main.ts           lógica da janela principal
+    note.ts           lógica de uma janela de nota destacada
     settings.ts       lógica da janela de configurações
-    styles.css        tema dark, usado pelas duas janelas
+    styles.css        tema dark, usado pelas três janelas
   src-tauri/src/
-    lib.rs            tray, atalho global, janelas e comandos
+    lib.rs            tray, atalho global, janelas (principal, destacadas,
+                       configurações) e comandos
     config.rs         leitura/escrita de settings.json
     notes.rs          CRUD dos arquivos .md e lixeira
 ```
@@ -69,6 +74,25 @@ Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 - **O resize é disparado pelo frontend** porque `start_resize_dragging` não existe no
   `WebviewWindow` do Rust — só no `Window` interno, inacessível, e o `ResizeDirection` nem é
   reexportado pelo crate.
+- **`DragState` é um `HashMap<label, Instant>`, não um valor único.** Com janelas de nota
+  destacada existindo ao mesmo tempo da principal, arrastar uma não pode marcar a outra como
+  "em interação" — cada label tem sua própria carência.
+- **Esconder no blur passa por um debounce de 150ms num thread separado** (`schedule_hide_check`
+  em `lib.rs`), em vez de agir na hora do `Focused(false)`. Trocar o foco entre duas janelas do
+  próprio Notes gera um blur seguido de um focus quase imediato, e a ordem de chegada dos dois
+  eventos não é garantida — a checagem, feita só quando o prazo vence, olha pro estado final
+  (`any_notes_window_focused`) em vez de depender de qual evento chegou primeiro.
+- **`hide_all`/`show_all` operam sobre a principal e toda janela `note-*` juntas, nunca uma de
+  cada vez** — é o que faz "esconder o app" ser uma operação do conjunto, não da janela que
+  perdeu o foco.
+- **Uma janela de nota destacada nunca é destruída por `.destroy()` a partir de outro
+  comando.** Tanto o botão de fechar (chama `undetach_note`) quanto o clique no card da grid
+  passam por `window.close()`, que dispara `CloseRequested` — a limpeza da composição salva
+  (`cleanup_detached`) mora só ali, um único caminho, em vez de duplicada entre o comando e o
+  handler do evento.
+- **A janela `settings` fica de fora do `is_notes_window`** — nunca fez parte do ciclo
+  esconder/mostrar da principal, e a generalização pro multi-janela não mudou isso: focar as
+  configurações ainda esconde a principal, como sempre esteve.
 
 ## Dev e instalado convivem como dois apps
 
@@ -95,6 +119,10 @@ compilação de debug servida pelo Vite em modo dev.
   app instalado: `enable` faria o Windows subir o `target/debug` no boot, e `disable` apagaria o
   autostart do app de verdade. Por isso o checkbox aparece desabilitado na janela de
   configurações do dev — controle que não faz nada é pior que controle desligado.
+- **O que a separação não cobre: instalar com o dev aberto o derruba.** O instalador NSIS
+  encerra processos com o mesmo nome de imagem, e o binário de dev também é `notes.exe`. O
+  `tauri dev` morre com exit 1 sem mensagem — parece crash, não é. Separar exigiria renomear o
+  crate, o que não compensa por um efeito que só aparece na hora de instalar.
 
 ## Ícone
 
@@ -106,6 +134,12 @@ O desenho é validado a **16px**, não a 1024: é o tamanho da bandeja, onde o �
 vive. Aí só sobrevive silhueta simples com poucos elementos — uma versão com três linhas de
 texto virou mancha listrada e foi descartada em favor de duas. O `.ico` é referenciado pelo
 `tauri.conf.json` e o tray puxa dele via `default_window_icon()`.
+
+## Branches
+
+Gitflow: `main` só recebe merge de `develop`, na hora de lançar uma versão (junto com a tag
+`vX.Y.Z`, ver Versionamento abaixo). Toda feature nasce em `feature/<nome>` a partir de
+`develop` e volta pra lá via merge — nunca direto em `main`.
 
 ## Versionamento
 

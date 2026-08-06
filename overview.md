@@ -33,6 +33,11 @@ Todos os atalhos são editáveis pelo usuário nas configurações. Eles se divi
 | Nova nota | Cria uma nota vazia e foca o cursor nela. |
 | Deletar nota atual | Pede confirmação; ao confirmar, volta para a grid. |
 | Fixar janela | Liga/desliga o modo fixado (ver abaixo). |
+| Destacar nota | Abre a nota em edição numa **janela própria** (ver "Múltiplas janelas de nota"). |
+
+> Numa janela de nota destacada, só **deletar** é local. Os demais comandos acima
+> focam a janela principal e executam lá — não faz sentido, por exemplo, "alternar
+> visão" numa janela que não tem grid.
 
 > **Por que só um atalho global:** registrar todos no SO faria o Notes sequestrar combinações de outros programas. Apenas a invocação precisa funcionar de fora do app.
 
@@ -42,6 +47,32 @@ Todos os atalhos são editáveis pelo usuário nas configurações. Eles se divi
 - Notas **não têm título** — o foco é velocidade, e boa parte delas é temporária.
 - Salvamento automático enquanto digita.
 - Nota criada e deixada vazia é **descartada automaticamente** (não polui a grid).
+
+## Múltiplas janelas de nota
+
+Qualquer nota pode ser **destacada** para uma janela própria, independente da
+principal — útil pra consultar uma nota enquanto se escreve outra, ou enquanto se
+usa outro programa.
+
+- **Como destacar:** com a nota aberta na principal, o atalho "Destacar nota" a
+  abre em janela própria e a principal volta para a grid. Também dá pra **arrastar
+  um card da grid pra fora** dos limites da janela e soltar — mesmo efeito, com um
+  indicador visual acompanhando o cursor durante o arraste.
+- **Na grid**, o card de uma nota destacada tem visual diferente (borda
+  tracejada). Clicar nele **recolhe** a nota de volta — fecha a janela destacada
+  em vez de abrir mais uma vez dentro da principal.
+- **A janela destacada só tem a nota** — sem grid, sem busca. O único comando
+  local ali é **deletar**; os demais (nova nota, alternar visão, fixar) focam a
+  principal e executam lá. Tem um **botão de fechar** no canto superior direito, e
+  o atalho **"Fechar janela extra"** faz o mesmo — os dois, junto com `Esc`, valem
+  só dentro de uma janela destacada, nunca na principal.
+- **Fica sempre por cima e fora da barra de tarefas**, no mesmo perfil da janela
+  principal — senão outro programa em foco cobriria a nota que se queria consultar.
+- **A composição persiste**: quais notas estão destacadas, e a posição/tamanho de
+  cada janela, voltam exatamente iguais ao reabrir o app.
+- **Perder o foco esconde tudo junto** — a principal e todas as destacadas. Trocar
+  o foco entre janelas do próprio Notes nunca esconde nada; só sair do app esconde
+  o conjunto inteiro (ver "Clicar fora da janela" abaixo).
 
 ## Janela de notas salvas (grid)
 
@@ -114,10 +145,14 @@ Duas seções, nada além disso:
   a janela em vez de abrir e fechar. O gesto também redefine a posição salva.
 - **Tamanho da janela:** redimensionável pelas bordas e cantos; o tamanho é salvo junto com a
   posição.
-- **Clicar fora da janela:** esconde o app. O autosave garante que nada se perde.
+- **Clicar fora esconde o app inteiro:** a principal e toda janela de nota destacada juntas,
+  não uma de cada vez. O que importa é o foco sair do Notes por completo — trocar de janela
+  entre a principal e uma destacada, ou entre duas destacadas, nunca esconde nada. O autosave
+  garante que nada se perde.
 - **Janela fixada:** enquanto fixada, perder o foco **não** esconde o app — dá para consultar
-  uma nota trabalhando em outra janela. `Esc` e o atalho de abrir/ocultar continuam
-  escondendo: o pino desliga só o gesto implícito, nunca o comando explícito.
+  uma nota trabalhando em outro programa. `Esc` e o atalho de abrir/ocultar continuam
+  escondendo: o pino desliga só o gesto implícito, nunca o comando explícito. É uma
+  preferência **única para o app inteiro**, não por janela.
   - O estado é **preferência, não estado momentâneo**: sobrevive a esconder, reabrir e
     reiniciar o app.
   - O rodapé mostra o pino aceso. Sem sinal visível, uma janela que não some mais parece

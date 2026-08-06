@@ -1,15 +1,17 @@
 mod config;
 mod notes;
 
-use config::{Config, Shortcuts};
+use config::{Config, DetachedWindow, Shortcuts};
 use notes::Note;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 #[cfg(not(debug_assertions))]
 use tauri_plugin_autostart::ManagerExt;
@@ -46,35 +48,76 @@ const DOUBLE_PRESS_WINDOW: Duration = Duration::from_millis(350);
 /// Instante do último acionamento do atalho global.
 struct ShortcutTiming(Mutex<Option<Instant>>);
 
-/// Arrastar a janela no Windows tira o foco do webview, o que seria confundido
+/// Arrastar uma janela tira o foco do webview dela, o que seria confundido
 /// com "clicou fora". Enquanto o arraste está fresco, o blur é ignorado.
-struct DragState(Mutex<Option<Instant>>);
+/// Chaveado por label porque várias janelas do app podem existir ao mesmo
+/// tempo — arrastar uma nota destacada não pode afetar a principal.
+struct DragState(Mutex<HashMap<String, Instant>>);
 
 const DRAG_GRACE: Duration = Duration::from_millis(700);
 
-fn mark_drag(app: &AppHandle) {
+/// Perder o foco agenda esconder o app inteiro depois desta folga. Trocar o
+/// foco entre duas janelas do próprio Notes gera um blur seguido de um focus
+/// quase imediato — a checagem, feita só quando o prazo vence, não depende da
+/// ordem de chegada dos dois eventos.
+const HIDE_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// Tamanho padrão de uma janela de nota destacada, usado quando ela nasce sem
+/// tamanho salvo (primeira vez que aquela nota é destacada).
+const DEFAULT_NOTE_SIZE: (u32, u32) = (560, 460);
+
+fn mark_drag(app: &AppHandle, label: &str) {
     if let Some(state) = app.try_state::<DragState>() {
-        if let Ok(mut last) = state.0.lock() {
-            *last = Some(Instant::now());
+        if let Ok(mut map) = state.0.lock() {
+            map.insert(label.to_string(), Instant::now());
         }
     }
 }
 
-/// Janela fixada ignora o blur. Lido do disco a cada evento — o arquivo é
-/// minúsculo e isso evita um segundo lugar onde o estado poderia divergir.
-fn is_pinned(app: &AppHandle) -> bool {
-    config::load(app).map(|cfg| cfg.pinned).unwrap_or(false)
-}
-
-fn is_dragging(app: &AppHandle) -> bool {
+fn is_dragging(app: &AppHandle, label: &str) -> bool {
     app.try_state::<DragState>()
-        .and_then(|state| state.0.lock().ok().and_then(|last| *last))
+        .and_then(|state| {
+            state
+                .0
+                .lock()
+                .ok()
+                .and_then(|map| map.get(label).copied())
+        })
         .map(|instant| instant.elapsed() < DRAG_GRACE)
         .unwrap_or(false)
 }
 
+/// Janela fixada ignora o blur. Lido do disco a cada evento — o arquivo é
+/// minúsculo e isso evita um segundo lugar onde o estado poderia divergir.
+/// Vale pra principal e todas as destacadas juntas, não é preferência por
+/// janela.
+fn is_pinned(app: &AppHandle) -> bool {
+    config::load(app).map(|cfg| cfg.pinned).unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
-// Posição da janela
+// Identificação de janelas
+// ---------------------------------------------------------------------------
+
+/// A principal e qualquer nota destacada participam do ciclo esconder/mostrar
+/// em conjunto. A janela de configurações fica de fora — sempre teve seu
+/// próprio ciclo de vida, independente.
+fn is_notes_window(label: &str) -> bool {
+    label == "main" || label.starts_with("note-")
+}
+
+fn window_note_id(label: &str) -> Option<&str> {
+    label.strip_prefix("note-")
+}
+
+fn any_notes_window_focused(app: &AppHandle) -> bool {
+    app.webview_windows()
+        .iter()
+        .any(|(label, window)| is_notes_window(label) && window.is_focused().unwrap_or(false))
+}
+
+// ---------------------------------------------------------------------------
+// Posição e tamanho
 // ---------------------------------------------------------------------------
 
 /// O canto da janela cabe neste monitor? A folga de 8px para trás tolera o
@@ -101,15 +144,30 @@ fn position_is_visible(window: &WebviewWindow, x: i32, y: i32) -> bool {
     })
 }
 
-fn restore_window_geometry(app: &AppHandle, window: &WebviewWindow) {
+/// Geometria salva de uma janela: da principal (`window_pos`/`window_size`) ou
+/// da entrada correspondente em `detached`, pelo id embutido no label.
+fn saved_geometry(cfg: &Config, label: &str) -> (Option<(i32, i32)>, Option<(u32, u32)>) {
+    match window_note_id(label) {
+        Some(note_id) => cfg
+            .detached
+            .iter()
+            .find(|d| d.note_id == note_id)
+            .map(|d| (d.pos, d.size))
+            .unwrap_or((None, None)),
+        None => (cfg.window_pos, cfg.window_size),
+    }
+}
+
+fn restore_geometry(app: &AppHandle, window: &WebviewWindow) {
     let cfg = config::load(app).unwrap_or_default();
+    let (pos, size) = saved_geometry(&cfg, window.label());
 
     // O tamanho vem antes da posição: redimensionar depois deslocaria a janela.
-    if let Some((width, height)) = cfg.window_size {
+    if let Some((width, height)) = size {
         let _ = window.set_size(PhysicalSize::new(width, height));
     }
 
-    if let Some((x, y)) = cfg.window_pos {
+    if let Some((x, y)) = pos {
         if position_is_visible(window, x, y) {
             let _ = window.set_position(PhysicalPosition::new(x, y));
             return;
@@ -118,10 +176,7 @@ fn restore_window_geometry(app: &AppHandle, window: &WebviewWindow) {
     let _ = window.center();
 }
 
-fn save_window_geometry(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
+fn save_geometry(app: &AppHandle, window: &WebviewWindow) {
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return;
     };
@@ -131,33 +186,90 @@ fn save_window_geometry(app: &AppHandle) {
 
     let next_pos = Some((position.x, position.y));
     let next_size = Some((size.width, size.height));
-    if cfg.window_pos == next_pos && cfg.window_size == next_size {
-        return;
+
+    match window_note_id(window.label()) {
+        Some(note_id) => {
+            let Some(entry) = cfg.detached.iter_mut().find(|d| d.note_id == note_id) else {
+                // A nota já não está mais destacada (undetach concorrente);
+                // não há entrada pra atualizar.
+                return;
+            };
+            if entry.pos == next_pos && entry.size == next_size {
+                return;
+            }
+            entry.pos = next_pos;
+            entry.size = next_size;
+        }
+        None => {
+            if cfg.window_pos == next_pos && cfg.window_size == next_size {
+                return;
+            }
+            cfg.window_pos = next_pos;
+            cfg.window_size = next_size;
+        }
     }
 
-    cfg.window_pos = next_pos;
-    cfg.window_size = next_size;
     let _ = config::save(app, &cfg);
 }
 
-// ---------------------------------------------------------------------------
-// Janelas
-// ---------------------------------------------------------------------------
-
-fn show_main(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    // Antes do `show` para a janela não piscar no lugar anterior.
-    restore_window_geometry(app, &window);
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("app-shown", ());
+fn save_all_geometry(app: &AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if is_notes_window(&label) {
+            save_geometry(app, &window);
+        }
+    }
 }
 
-/// Recentraliza e mantém aberta. O gesto também redefine a posição salva —
-/// caso contrário a próxima abertura voltaria para o canto de onde se fugiu.
+// ---------------------------------------------------------------------------
+// Esconder / mostrar o app inteiro
+// ---------------------------------------------------------------------------
+
+/// Esconde a principal e todas as destacadas juntas — nenhuma é destruída,
+/// só ficam invisíveis até o próximo `show_all`. Um único emit global evita
+/// disparar o mesmo evento uma vez por janela.
+fn hide_all(app: &AppHandle) {
+    let _ = app.emit("app-hiding", ());
+    for (label, window) in app.webview_windows() {
+        if is_notes_window(&label) {
+            save_geometry(app, &window);
+            let _ = window.hide();
+        }
+    }
+}
+
+fn show_all(app: &AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if is_notes_window(&label) {
+            restore_geometry(app, &window);
+            let _ = window.unminimize();
+            let _ = window.show();
+        }
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_focus();
+    }
+    let _ = app.emit("app-shown", ());
+}
+
+/// Perder o foco agenda esta checagem depois de uma folga: se, no momento em
+/// que ela dispara, nenhuma janela do Notes estiver focada, o app inteiro
+/// esconde. Não depende de saber qual janela ganhou o foco a seguir — só do
+/// estado no fim do prazo, o que também cobre trocar de janela dentro do
+/// próprio app sem esconder nada.
+fn schedule_hide_check(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(HIDE_DEBOUNCE);
+        if !any_notes_window_focused(&handle) && !is_pinned(&handle) {
+            hide_all(&handle);
+        }
+    });
+}
+
+/// Recentraliza a principal e mantém tudo aberto — o duplo toque é "traga o
+/// app de volta por completo", não só a janela principal. O gesto também
+/// redefine a posição salva da principal, senão a próxima abertura voltaria
+/// para o canto de onde se fugiu.
 fn center_main(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -166,29 +278,26 @@ fn center_main(app: &AppHandle) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
-    let _ = window.emit("app-shown", ());
-    save_window_geometry(app);
-}
+    save_geometry(app, &window);
 
-fn hide_main(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        // Dá ao frontend a chance de gravar o que ainda está no debounce.
-        let _ = window.emit("app-hiding", ());
-        save_window_geometry(app);
-        let _ = window.hide();
+    for (label, other) in app.webview_windows() {
+        if label != "main" && is_notes_window(&label) {
+            restore_geometry(app, &other);
+            let _ = other.unminimize();
+            let _ = other.show();
+        }
     }
+    let _ = app.emit("app-shown", ());
 }
 
-fn toggle_main(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+fn toggle_app(app: &AppHandle) {
+    if app.get_webview_window("main").is_none() {
         return;
-    };
-    let visible = window.is_visible().unwrap_or(false);
-    let focused = window.is_focused().unwrap_or(false);
-    if visible && focused {
-        hide_main(app);
+    }
+    if any_notes_window_focused(app) {
+        hide_all(app);
     } else {
-        show_main(app);
+        show_all(app);
     }
 }
 
@@ -200,6 +309,89 @@ fn show_settings(app: &AppHandle) {
         // A janela é reaproveitada; sem isto ela reabriria com dados velhos.
         let _ = window.emit("settings-shown", ());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Janelas de nota destacada
+// ---------------------------------------------------------------------------
+
+fn detached_ids(cfg: &Config) -> Vec<String> {
+    cfg.detached.iter().map(|d| d.note_id.clone()).collect()
+}
+
+/// Constrói (sem mostrar) a janela de uma nota destacada, no mesmo perfil da
+/// principal: sem decoração nativa (o app inteiro é frameless), sempre por
+/// cima e fora da barra de tarefas, pra continuar visível enquanto se usa
+/// outro programa — o próprio motivo de existir do destacar.
+fn build_note_window(
+    app: &AppHandle,
+    note_id: &str,
+    size: Option<(u32, u32)>,
+) -> tauri::Result<WebviewWindow> {
+    let label = format!("note-{note_id}");
+    let (width, height) = size.unwrap_or(DEFAULT_NOTE_SIZE);
+    WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::App(format!("note.html?id={note_id}").into()),
+    )
+    .title(APP_LABEL)
+    .inner_size(width as f64, height as f64)
+    .min_inner_size(320.0, 240.0)
+    .decorations(false)
+    .resizable(true)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .visible(false)
+    .theme(Some(Theme::Dark))
+    .build()
+}
+
+/// Remove a nota da composição salva e avisa a principal a re-estilizar o
+/// card. Não destrói a janela — quem chama já está fechando ela de verdade
+/// (evento nativo de close) ou nunca chegou a criar uma.
+fn cleanup_detached(app: &AppHandle, note_id: &str) {
+    let Ok(mut cfg) = config::load(app) else {
+        return;
+    };
+    cfg.detached.retain(|d| d.note_id != note_id);
+    if config::save(app, &cfg).is_ok() {
+        let _ = app.emit("detached-changed", detached_ids(&cfg));
+    }
+}
+
+/// Registra os eventos comuns a qualquer janela do app (principal ou nota
+/// destacada). O que muda por tipo é só o fechamento: a principal nunca fecha
+/// de fato (vira esconder o app inteiro); a destacada fecha de verdade, e o
+/// que precisa sobreviver a isso é a composição salva.
+fn attach_notes_window_events(app: &AppHandle, window: &WebviewWindow) {
+    let handle = app.clone();
+    let label = window.label().to_string();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Focused(false) => {
+            if !is_dragging(&handle, &label) {
+                schedule_hide_check(&handle);
+            }
+        }
+        // Cada movimento renova a carência: arrastar ou redimensionar por
+        // vários segundos não pode expirar no meio do caminho.
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            if is_dragging(&handle, &label) {
+                mark_drag(&handle, &label);
+            }
+        }
+        WindowEvent::CloseRequested { api, .. } => {
+            if let Some(note_id) = window_note_id(&label) {
+                // Deixa fechar de verdade — só atualiza o que precisa
+                // sobreviver ao fechamento antes que a janela suma.
+                cleanup_detached(&handle, note_id);
+            } else {
+                api.prevent_close();
+                hide_all(&handle);
+            }
+        }
+        _ => {}
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -345,17 +537,17 @@ fn empty_trash(app: AppHandle) -> Result<usize, String> {
 
 #[tauri::command]
 fn hide_app(app: AppHandle) {
-    hide_main(&app);
+    hide_all(&app);
 }
 
-/// Inicia o arraste da janela registrando que ele começou, para o blur que vem
-/// logo em seguida não ser tratado como clique fora.
+/// Inicia o arraste da janela que chamou o comando, registrando que ele
+/// começou, para o blur que vem logo em seguida não ser tratado como clique
+/// fora. `window` é injetado pelo Tauri como a própria janela chamadora — não
+/// precisa mais ser sempre "main", agora que notas destacadas também arrastam.
 #[tauri::command]
-fn begin_drag(app: AppHandle) {
-    mark_drag(&app);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.start_dragging();
-    }
+fn begin_drag(window: WebviewWindow) {
+    mark_drag(window.app_handle(), window.label());
+    let _ = window.start_dragging();
 }
 
 /// Mesmo motivo do `begin_drag`: as bordas nativas são tratadas pelo sistema e
@@ -363,12 +555,12 @@ fn begin_drag(app: AppHandle) {
 /// O redimensionamento em si é disparado pelo frontend, que sabe qual borda foi
 /// agarrada — `start_resize_dragging` não é exposto no `WebviewWindow` do Rust.
 #[tauri::command]
-fn begin_resize(app: AppHandle) {
-    mark_drag(&app);
+fn begin_resize(window: WebviewWindow) {
+    mark_drag(window.app_handle(), window.label());
 }
 
-/// Fixa ou solta a janela. Fica na config porque é preferência, não estado
-/// momentâneo: quem fixou espera continuar fixado depois de reabrir o app.
+/// Fixa ou solta o app inteiro. Fica na config porque é preferência, não
+/// estado momentâneo: quem fixou espera continuar fixado depois de reabrir.
 #[tauri::command]
 fn set_pinned(app: AppHandle, pinned: bool) -> Result<Config, String> {
     let mut cfg = config::load(&app)?;
@@ -400,8 +592,122 @@ fn close_settings(app: AppHandle) {
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
-    save_window_geometry(&app);
+    save_all_geometry(&app);
     app.exit(0);
+}
+
+/// Destaca uma nota em janela própria. Se ela já estiver destacada, só foca a
+/// janela existente em vez de duplicar. `x`/`y`, quando vêm de um arraste
+/// solto fora da grid, centralizam a janela nova sob o ponto do drop; sem
+/// eles (atalho de teclado, sem gesto de arrastar) ela nasce centralizada na
+/// tela.
+///
+/// A criação em si (`.build()`) roda numa thread solta, fora do runtime do
+/// Tauri — nem direto no handler síncrono, nem via `run_on_main_thread`.
+/// As duas travam no Windows: `wry#583` documenta que criar uma `WebviewWindow`
+/// em qualquer thread que o próprio Tauri já usa pra despachar comandos ou
+/// pra rodar a fila de eventos impede a inicialização do WebView2 de
+/// completar, porque ela mesma depende dessa fila pra terminar. Só depois de
+/// pronta a janela volta pra thread principal via `run_on_main_thread` — aí
+/// sim, porque posicionar/mostrar/focar (ao contrário de criar) não brigam
+/// com a fila, e feitas fora da thread principal não têm efeito de verdade.
+#[tauri::command]
+async fn detach_note(
+    app: AppHandle,
+    id: String,
+    x: Option<i32>,
+    y: Option<i32>,
+) -> Result<(), String> {
+    let label = format!("note-{id}");
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let mut cfg = config::load(&app)?;
+    let existing = cfg.detached.iter().find(|d| d.note_id == id).cloned();
+    let saved_pos = existing.as_ref().and_then(|e| e.pos);
+    let saved_size = existing.as_ref().and_then(|e| e.size);
+
+    // Só a construção em si roda na thread solta. Posicionar, mostrar e
+    // focar são operações leves que, feitas fora da thread principal, não
+    // travam — mas também não fazem efeito de verdade (a janela nasce e
+    // fica invisível). Voltam pra thread principal via `run_on_main_thread`.
+    let (tx, mut rx) = tauri::async_runtime::channel::<Result<WebviewWindow, String>>(1);
+    let thread_app = app.clone();
+    let thread_id = id.clone();
+    std::thread::spawn(move || {
+        let outcome = build_note_window(&thread_app, &thread_id, saved_size)
+            .map_err(|e| format!("não foi possível criar a janela: {e}"));
+        let _ = tx.blocking_send(outcome);
+    });
+
+    let window = rx
+        .recv()
+        .await
+        .ok_or_else(|| "a criação da janela não respondeu".to_string())??;
+
+    let main_thread_app = app.clone();
+    app.run_on_main_thread(move || {
+        match saved_pos {
+            Some((px, py)) => {
+                let _ = window.set_position(PhysicalPosition::new(px, py));
+            }
+            None => match (x, y) {
+                (Some(px), Some(py)) => {
+                    if let Ok(size) = window.outer_size() {
+                        let nx = px - size.width as i32 / 2;
+                        let ny = py - size.height as i32 / 2;
+                        let _ = window.set_position(PhysicalPosition::new(nx, ny));
+                    }
+                }
+                _ => {
+                    let _ = window.center();
+                }
+            },
+        }
+
+        attach_notes_window_events(&main_thread_app, &window);
+        let _ = window.show();
+        let _ = window.set_focus();
+    })
+    .map_err(|e| format!("não foi possível exibir a janela: {e}"))?;
+
+    if existing.is_none() {
+        cfg.detached.push(DetachedWindow {
+            note_id: id,
+            pos: None,
+            size: None,
+        });
+        config::save(&app, &cfg)?;
+        let _ = app.emit("detached-changed", detached_ids(&cfg));
+    }
+    Ok(())
+}
+
+/// Foca a principal e pede que ela execute um comando por conta própria.
+/// Usado pelas janelas de nota destacada: lá, só deletar é local — nova
+/// nota, alternar visão e fixar sempre acontecem na principal.
+#[tauri::command]
+fn focus_main(app: AppHandle, action: String) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+        let _ = main.emit("remote-command", action);
+    }
+}
+
+/// Fecha a janela de uma nota destacada. A limpeza da composição salva
+/// acontece no `CloseRequested` de `attach_notes_window_events`, disparado
+/// por este `close()` — um único caminho, seja o fechamento pedido daqui
+/// (clique no card da grid) ou de dentro da própria janela destacada.
+#[tauri::command]
+fn undetach_note(app: AppHandle, id: String) {
+    if let Some(window) = app.get_webview_window(&format!("note-{id}")) {
+        let _ = window.close();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +727,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => show_settings(app),
             "quit" => {
-                save_window_geometry(app);
+                save_all_geometry(app);
                 app.exit(0);
             }
             _ => {}
@@ -432,7 +738,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_main(tray.app_handle());
+                show_all(tray.app_handle());
             }
         });
 
@@ -470,7 +776,7 @@ pub fn run() {
                     if double_press {
                         center_main(app);
                     } else {
-                        toggle_main(app);
+                        toggle_app(app);
                     }
                 })
                 .build(),
@@ -494,14 +800,17 @@ pub fn run() {
             app_version,
             open_settings,
             close_settings,
-            quit_app
+            quit_app,
+            detach_note,
+            undetach_note,
+            focus_main
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             let cfg = config::load(&handle).unwrap_or_default();
 
             app.manage(ShortcutTiming(Mutex::new(None)));
-            app.manage(DragState(Mutex::new(None)));
+            app.manage(DragState(Mutex::new(HashMap::new())));
 
             notes::ensure_dir(&cfg.notes_dir).ok();
             // Lixeira vencida sai na abertura: é o único momento garantido em
@@ -518,27 +827,19 @@ pub fn run() {
 
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_title(APP_LABEL);
-                let win_handle = handle.clone();
-                window.on_window_event(move |event| match event {
-                    // Clicar fora esconde o app; o autosave garante que nada se perde.
-                    WindowEvent::Focused(false) => {
-                        if !is_dragging(&win_handle) && !is_pinned(&win_handle) {
-                            hide_main(&win_handle);
-                        }
+                attach_notes_window_events(&handle, &window);
+            }
+
+            // Recria, ainda escondida, cada janela de nota que estava
+            // destacada da última vez que o app rodou — é o que dá a
+            // composição de janelas restaurada ao reabrir.
+            for entry in &cfg.detached {
+                if let Ok(window) = build_note_window(&handle, &entry.note_id, entry.size) {
+                    if let Some((x, y)) = entry.pos {
+                        let _ = window.set_position(PhysicalPosition::new(x, y));
                     }
-                    // Cada movimento renova a carência: arrastar ou redimensionar
-                    // por vários segundos não pode expirar no meio do caminho.
-                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                        if is_dragging(&win_handle) {
-                            mark_drag(&win_handle);
-                        }
-                    }
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        hide_main(&win_handle);
-                    }
-                    _ => {}
-                });
+                    attach_notes_window_events(&handle, &window);
+                }
             }
 
             // A janela de configurações fica escondida, nunca destruída: ela é
@@ -562,7 +863,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::corner_fits;
+    use super::*;
 
     const PRIMARIO: ((i32, i32), (u32, u32)) = ((0, 0), (1920, 1080));
     /// Segundo monitor à esquerda: origem negativa, o caso que o Windows produz.
@@ -597,5 +898,68 @@ mod tests {
     fn folga_pequena_para_fora_e_tolerada() {
         assert!(corner_fits(PRIMARIO.0, PRIMARIO.1, -8, -8));
         assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, -9, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Identificação de janelas
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reconhece_a_principal_e_as_destacadas() {
+        assert!(is_notes_window("main"));
+        assert!(is_notes_window("note-n123"));
+        assert!(!is_notes_window("settings"));
+        assert!(!is_notes_window("note")); // sem o hífen, não é uma nota
+    }
+
+    #[test]
+    fn extrai_o_id_da_nota_do_label_da_janela() {
+        assert_eq!(window_note_id("note-n123"), Some("n123"));
+        assert_eq!(window_note_id("main"), None);
+        assert_eq!(window_note_id("settings"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Geometria salva por janela
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn geometria_da_principal_vem_dos_campos_proprios() {
+        let mut cfg = Config::default();
+        cfg.window_pos = Some((10, 20));
+        cfg.window_size = Some((300, 200));
+        cfg.detached.push(DetachedWindow {
+            note_id: "n1".into(),
+            pos: Some((999, 999)),
+            size: None,
+        });
+
+        assert_eq!(
+            saved_geometry(&cfg, "main"),
+            (Some((10, 20)), Some((300, 200)))
+        );
+    }
+
+    #[test]
+    fn geometria_de_destacada_vem_da_entrada_correspondente() {
+        let mut cfg = Config::default();
+        cfg.detached.push(DetachedWindow {
+            note_id: "n1".into(),
+            pos: Some((10, 20)),
+            size: Some((300, 200)),
+        });
+        cfg.detached.push(DetachedWindow {
+            note_id: "n2".into(),
+            pos: None,
+            size: None,
+        });
+
+        assert_eq!(
+            saved_geometry(&cfg, "note-n1"),
+            (Some((10, 20)), Some((300, 200)))
+        );
+        assert_eq!(saved_geometry(&cfg, "note-n2"), (None, None));
+        // Nota nunca destacada, sem entrada nenhuma: não inventa geometria.
+        assert_eq!(saved_geometry(&cfg, "note-n3"), (None, None));
     }
 }
