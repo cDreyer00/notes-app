@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Roda a partir do `tauri dev`, não da build instalada. O backend decide o
+ * mesmo por `cfg!(debug_assertions)`; as duas metades sempre concordam porque
+ * `tauri dev` é justamente compilação de debug servida pelo Vite em modo dev.
+ */
+export const IS_DEV = import.meta.env.DEV;
+
 export interface Note {
   id: string;
   content: string;
@@ -63,6 +70,7 @@ export const api = {
   beginDrag: () => invoke<void>("begin_drag"),
   beginResize: () => invoke<void>("begin_resize"),
   setPinned: (pinned: boolean) => invoke<Config>("set_pinned", { pinned }),
+  appVersion: () => invoke<string>("app_version"),
   openSettings: () => invoke<void>("open_settings"),
   closeSettings: () => invoke<void>("close_settings"),
   quitApp: () => invoke<void>("quit_app"),

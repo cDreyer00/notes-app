@@ -4,6 +4,7 @@ import {
   api,
   eventToAccelerator,
   hasModifier,
+  IS_DEV,
   prettyAccelerator,
   type Config,
   type Shortcuts,
@@ -199,8 +200,36 @@ async function loadState(): Promise<void> {
   await refreshTrashCount();
 }
 
+/**
+ * A chave de autostart no registro é única e pertence ao app instalado. O
+ * binário de desenvolvimento não a toca — então o checkbox aqui não teria
+ * efeito nenhum, e um controle que não faz nada é pior que um desligado.
+ */
+function markDevBuild(): void {
+  if (!IS_DEV) return;
+
+  autostartInput.disabled = true;
+  const note = document.querySelector<HTMLElement>("#autostart-dev")!;
+  note.textContent =
+    "Build de desenvolvimento: o autostart pertence ao app instalado e não é alterado daqui.";
+  note.classList.remove("hidden");
+}
+
+/** Com duas cópias do app instaladas, saber qual está aberta não é detalhe. */
+async function showVersion(): Promise<void> {
+  try {
+    const version = await api.appVersion();
+    document.querySelector<HTMLElement>("#app-version")!.textContent =
+      IS_DEV ? `Notes ${version} (dev)` : `Notes ${version}`;
+  } catch (error) {
+    console.error("falha ao ler a versão", error);
+  }
+}
+
 async function init(): Promise<void> {
   await loadState();
+  markDevBuild();
+  await showVersion();
 
   for (const key of SHORTCUT_KEYS) {
     button(key).addEventListener("click", () => startCapture(key));

@@ -11,8 +11,33 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
 };
+#[cfg(not(debug_assertions))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+/// Nome exibido no tray e no título das janelas. Com o app instalado rodando,
+/// os dois ícones na bandeja são idênticos — o rótulo é o que diz qual é qual.
+#[cfg(not(debug_assertions))]
+const APP_LABEL: &str = "Notes";
+#[cfg(debug_assertions)]
+const APP_LABEL: &str = "Notes (dev)";
+
+/// A chave de autostart no registro é uma só, com o nome do app. Mexer nela a
+/// partir do binário de desenvolvimento faria o Windows subir o `target/debug`
+/// no boot — ou, no `disable`, apagaria o autostart do app de verdade.
+/// Em dev a preferência é gravada no settings, mas nunca aplicada no SO.
+#[cfg(not(debug_assertions))]
+fn apply_autostart(app: &AppHandle, enabled: bool) {
+    let launcher = app.autolaunch();
+    let _ = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+}
+
+#[cfg(debug_assertions)]
+fn apply_autostart(_app: &AppHandle, _enabled: bool) {}
 
 /// Dois toques no atalho dentro desta janela de tempo significam "traga a
 /// janela de volta para o centro" em vez de abrir e fechar em seguida.
@@ -232,12 +257,7 @@ fn save_config(
     // Encurtar o prazo tem efeito imediato, não só no próximo boot.
     let _ = notes::purge_trash(&cfg.notes_dir, cfg.trash_retention_days);
 
-    let launcher = app.autolaunch();
-    let _ = if autostart {
-        launcher.enable()
-    } else {
-        launcher.disable()
-    };
+    apply_autostart(&app, autostart);
 
     let _ = app.emit("config-changed", &cfg);
     Ok(cfg)
@@ -358,6 +378,14 @@ fn set_pinned(app: AppHandle, pinned: bool) -> Result<Config, String> {
     Ok(cfg)
 }
 
+/// Versão vinda do `Cargo.toml`, a única fonte do número no projeto. Com duas
+/// cópias do app rodando (a instalada e a de dev), precisa dar para ver qual é
+/// qual sem adivinhar.
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     show_settings(&app);
@@ -387,7 +415,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&settings_item, &separator, &quit_item])?;
 
     let mut builder = TrayIconBuilder::with_id("notes-tray")
-        .tooltip("Notes")
+        .tooltip(APP_LABEL)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -463,6 +491,7 @@ pub fn run() {
             begin_drag,
             begin_resize,
             set_pinned,
+            app_version,
             open_settings,
             close_settings,
             quit_app
@@ -485,14 +514,10 @@ pub fn run() {
                 eprintln!("[notes] atalho global não registrado: {err}");
             }
 
-            let launcher = handle.autolaunch();
-            let _ = if cfg.autostart {
-                launcher.enable()
-            } else {
-                launcher.disable()
-            };
+            apply_autostart(&handle, cfg.autostart);
 
             if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.set_title(APP_LABEL);
                 let win_handle = handle.clone();
                 window.on_window_event(move |event| match event {
                     // Clicar fora esconde o app; o autosave garante que nada se perde.
@@ -519,6 +544,7 @@ pub fn run() {
             // A janela de configurações fica escondida, nunca destruída: ela é
             // declarada na config e não seria recriada depois de fechada.
             if let Some(window) = handle.get_webview_window("settings") {
+                let _ = window.set_title(&format!("{APP_LABEL} — Configurações"));
                 let settings_window = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {

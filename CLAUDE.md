@@ -10,12 +10,8 @@ use o @overview.md como ponto de partida
 - Sempre pesquise documentações atualizadas, ferramentas atualizam constantemente e devem sempre ser revisadas.
 - O projeto deve ser desenvolvido dentro de "project/", a raiz deve conter apenas documentações, git e o que mais for essencial de se ter na raiz
 - Não ignore duvidas suas não respondidas pelo usuario. Se algo ainda esta incerto ou se o usuario não esclareceu todas suas duvidas atuais, insista no dialogo até tudo estar esclarecido para ambos os lados
-- **Atualize o `overview.md` sempre que pertinente**, na mesma leva da mudança. Ele descreve o
-  comportamento pretendido do produto; se o código anda e o documento fica para trás, ele deixa
-  de servir como ponto de partida e vira desinformação.
-- Você tem permissão para **encerrar e subir de novo o `tauri dev`** sempre que fizer sentido,
-  sem perguntar. Encerrar o comando não mata os filhos: o `notes.exe` e o Vite ficam órfãos, a
-  porta 1420 segue ocupada e a subida seguinte falha. Limpe os dois antes de subir.
+- **Atualize o `overview.md` sempre que pertinente**, na mesma leva da mudança. Ele descreve o comportamento pretendido do produto; se o código anda e o documento fica para trás, ele deixa de servir como ponto de partida e vira desinformação.
+- Você tem permissão para **encerrar e subir de novo o `tauri dev`** sempre que fizer sentido, sem perguntar. Encerrar o comando não mata os filhos: o `notes.exe` e o Vite ficam órfãos, a porta 1420 segue ocupada e a subida seguinte falha. Limpe os dois antes de subir.
 
 ---
 
@@ -73,6 +69,70 @@ Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 - **O resize é disparado pelo frontend** porque `start_resize_dragging` não existe no
   `WebviewWindow` do Rust — só no `Window` interno, inacessível, e o `ResizeDirection` nem é
   reexportado pelo crate.
+
+## Dev e instalado convivem como dois apps
+
+O `tauri dev` e o app instalado são o mesmo programa com o mesmo identifier, então por padrão
+dividiriam tudo: config, notas, lixeira, atalho global e a chave de autostart. Testar uma
+mudança mexeria nas notas de verdade. A separação é por `cfg!(debug_assertions)` no Rust e
+`import.meta.env.DEV` no frontend — as duas metades sempre concordam, porque `tauri dev` é
+compilação de debug servida pelo Vite em modo dev.
+
+| | Instalado | `tauri dev` |
+|---|---|---|
+| Config e notas | `%APPDATA%\com.cris.notes` | `%APPDATA%\com.cris.notes-dev` |
+| Atalho global padrão | `Ctrl+Alt+F` | `Ctrl+Alt+Shift+F` |
+| Autostart | aplica no registro | **nunca toca** |
+| Tray e título | `Notes` | `Notes (dev)` |
+| Rodapé | — | selo `dev` |
+
+- A pasta de dev é **irmã** da real, não subpasta: dentro dela, um `list` da pasta real
+  enxergaria as notas de teste.
+- **O atalho global padrão precisa ser outro.** O registro é no SO: quem chega primeiro fica com
+  a combinação e o segundo falha em silêncio — com o app instalado aberto, o dev nunca abriria
+  pelo teclado.
+- **O autostart nunca é tocado em dev**, nem para desligar. A chave de registro é uma só e é do
+  app instalado: `enable` faria o Windows subir o `target/debug` no boot, e `disable` apagaria o
+  autostart do app de verdade. Por isso o checkbox aparece desabilitado na janela de
+  configurações do dev — controle que não faz nada é pior que controle desligado.
+
+## Ícone
+
+Fica em `src-tauri/icons/`, gerado por `npm run tauri icon <arquivo.png>` a partir de um PNG
+quadrado de 1024px. **O comando também cria pastas `ios/` e `android/`** — apague-as, o app é
+só Windows.
+
+O desenho é validado a **16px**, não a 1024: é o tamanho da bandeja, onde o ícone realmente
+vive. Aí só sobrevive silhueta simples com poucos elementos — uma versão com três linhas de
+texto virou mancha listrada e foi descartada em favor de duas. O `.ico` é referenciado pelo
+`tauri.conf.json` e o tray puxa dele via `default_window_icon()`.
+
+## Versionamento
+
+A versão vive **só no `Cargo.toml`**. O `tauri.conf.json` não declara `version` (o Tauri cai
+no Cargo por padrão) e o `package.json` também não — ele é `private` e npm não exige. Dos três
+lugares onde o número já esteve, o do Cargo é o único obrigatório, então é o único que sobra:
+sem cópias, não há como bumpar uma e esquecer as outras.
+
+Como não existe API pública aqui, o SemVer se lê assim:
+
+- **MAJOR** — quebra o que já está no disco do usuário: formato do `.md`, layout da pasta,
+  chave do `settings.json` que não migra sozinha. Exige que ele faça algo.
+- **MINOR** — comando novo, feature, mudança visível de comportamento.
+- **PATCH** — correção que não muda o que o app faz de propósito.
+
+O `#[serde(default)]` da config e o `find_in_trash` aceitando o formato antigo existem
+justamente para que mudanças assim não precisem de um MAJOR.
+
+Cada build vira **tag `vX.Y.Z`** no commit exato, com Release no GitHub e o instalador
+anexado — é o que liga o app rodando na máquina ao código que o gerou. A versão aparece no
+rodapé das configurações (comando `app_version`), com `(dev)` quando é a build de
+desenvolvimento.
+
+Sem updater por ora: atualizar é rodar o instalador novo por cima, e o NSIS faz upgrade
+in-place sem tocar nas notas, que vivem em `%APPDATA%`. O `tauri-plugin-updater` exige par de
+chaves, assinatura por release e um manifesto hospedado — vale quando houver alguém além do
+autor usando.
 
 ## Testes
 

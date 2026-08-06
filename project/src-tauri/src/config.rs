@@ -3,6 +3,38 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// Verdadeiro no binário de desenvolvimento (`tauri dev`), falso no instalado.
+pub const IS_DEV: bool = cfg!(debug_assertions);
+
+/// O app instalado e o `tauri dev` são o mesmo programa, com o mesmo
+/// identifier: sem separar, dividiriam config, notas e lixeira, e testar uma
+/// mudança mexeria nas notas de verdade. Em desenvolvimento tudo ganha o
+/// sufixo `-dev` — pasta irmã, nunca dentro da pasta real.
+fn with_dev_suffix(dir: PathBuf, dev: bool) -> PathBuf {
+    if !dev {
+        return dir;
+    }
+    match dir.file_name().and_then(|name| name.to_str()) {
+        Some(name) => dir.with_file_name(format!("{name}-dev")),
+        None => dir,
+    }
+}
+
+const TOGGLE_APP_RELEASE: &str = "Control+Alt+F";
+
+/// Atalho global do binário de desenvolvimento. Precisa ser outro: o registro é
+/// no SO, quem chega primeiro fica com a combinação e o segundo falha em
+/// silêncio — com o app instalado aberto, o dev nunca abriria pelo teclado.
+const TOGGLE_APP_DEV: &str = "Control+Alt+Shift+F";
+
+fn default_toggle_app(dev: bool) -> &'static str {
+    if dev {
+        TOGGLE_APP_DEV
+    } else {
+        TOGGLE_APP_RELEASE
+    }
+}
+
 /// Combinações de teclas, no formato de accelerator do Tauri ("Control+Alt+F").
 /// Apenas `toggle_app` é registrado no sistema operacional; os demais são
 /// tratados no frontend e só valem com a janela em foco.
@@ -23,7 +55,7 @@ impl Default for Shortcuts {
     fn default() -> Self {
         // Mnemônicos em português: Escrever, Deletar, Fixar.
         Self {
-            toggle_app: "Control+Alt+F".into(),
+            toggle_app: default_toggle_app(IS_DEV).into(),
             toggle_view: "Control+Tab".into(),
             new_note: "Control+E".into(),
             delete_note: "Control+D".into(),
@@ -68,6 +100,7 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_config_dir()
         .map_err(|e| format!("não foi possível localizar a pasta de configuração: {e}"))?;
+    let dir = with_dev_suffix(dir, IS_DEV);
     fs::create_dir_all(&dir).map_err(|e| format!("não foi possível criar {dir:?}: {e}"))?;
     Ok(dir.join("settings.json"))
 }
@@ -77,7 +110,7 @@ pub fn default_notes_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("não foi possível localizar a pasta de dados: {e}"))?;
-    Ok(dir.join("notes"))
+    Ok(with_dev_suffix(dir, IS_DEV).join("notes"))
 }
 
 /// Configuração corrompida cai no padrão em vez de derrubar o app — perder
@@ -109,6 +142,50 @@ pub fn save(app: &AppHandle, cfg: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Separação entre o app instalado e o de desenvolvimento
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn o_app_instalado_usa_a_pasta_sem_sufixo() {
+        let dir = PathBuf::from("C:/Users/x/AppData/Roaming/com.cris.notes");
+        assert_eq!(with_dev_suffix(dir.clone(), false), dir);
+    }
+
+    /// A pasta de dev é **irmã** da real, nunca uma subpasta: dentro dela, um
+    /// `list` da pasta real acabaria enxergando as notas de teste.
+    #[test]
+    fn o_dev_usa_uma_pasta_irma_com_sufixo() {
+        let real = PathBuf::from("C:/Users/x/AppData/Roaming/com.cris.notes");
+        let dev = with_dev_suffix(real.clone(), true);
+
+        assert_eq!(
+            dev,
+            PathBuf::from("C:/Users/x/AppData/Roaming/com.cris.notes-dev")
+        );
+        assert_ne!(dev, real);
+        assert!(!dev.starts_with(&real));
+        assert_eq!(dev.parent(), real.parent());
+    }
+
+    #[test]
+    fn caminho_sem_ultimo_componente_nao_quebra() {
+        let raiz = PathBuf::from("/");
+        assert_eq!(with_dev_suffix(raiz.clone(), true), raiz);
+    }
+
+    /// Os dois registram o atalho no SO; iguais, um dos dois ficaria sem.
+    #[test]
+    fn o_atalho_global_padrao_difere_entre_dev_e_instalado() {
+        assert_eq!(default_toggle_app(false), "Control+Alt+F");
+        assert_ne!(default_toggle_app(true), default_toggle_app(false));
+        assert_eq!(Shortcuts::default().toggle_app, default_toggle_app(IS_DEV));
+    }
+
+    // -----------------------------------------------------------------------
+    // Leitura do settings.json
+    // -----------------------------------------------------------------------
 
     /// O caso que motivou o `#[serde(default)]` no container: acrescentar um
     /// comando não pode invalidar o settings.json de quem já usa o app.

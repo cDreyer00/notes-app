@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   api,
+  IS_DEV,
   matchesAccelerator,
   prettyAccelerator,
   relativeTime,
@@ -427,6 +428,16 @@ function renderHints(): void {
         ];
 
   hintsEl.replaceChildren();
+
+  // Com o app instalado aberto ao lado, as duas janelas são idênticas. Sem
+  // esta marca, dá para editar as notas de teste achando que são as de verdade.
+  if (IS_DEV) {
+    const badge = document.createElement("span");
+    badge.className = "hint-dev";
+    badge.textContent = "dev";
+    hintsEl.append(badge);
+  }
+
   for (const [keys, label] of entries) {
     const item = document.createElement("span");
     const kbd = document.createElement("kbd");

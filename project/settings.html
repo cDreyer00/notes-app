@@ -81,11 +81,15 @@
           <input id="autostart" type="checkbox" />
           <span>Iniciar junto com o Windows</span>
         </label>
+        <!-- Preenchido só na build de desenvolvimento. -->
+        <p id="autostart-dev" class="settings-note hidden"></p>
       </section>
 
       <p id="settings-error" class="settings-error hidden"></p>
 
       <div class="settings-actions">
+        <!-- Preenchido pelo backend: a versão vem do Cargo.toml. -->
+        <span id="app-version" class="app-version"></span>
         <button id="close" type="button">Fechar</button>
         <button id="save" type="button" class="primary">Salvar</button>
       </div>
