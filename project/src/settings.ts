@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -260,7 +260,9 @@ async function init(): Promise<void> {
     .querySelector<HTMLButtonElement>("#empty-cancel")!
     .addEventListener("click", () => emptyDialog.classList.add("hidden"));
 
-  await listen("settings-shown", () => void loadState());
+  // Endereçado a esta janela (`emit_to` no Rust): um `listen` global se
+  // registra como alvo "qualquer um", que não casa com emissão endereçada.
+  await getCurrentWebviewWindow().listen("settings-shown", () => void loadState());
 }
 
 void init();

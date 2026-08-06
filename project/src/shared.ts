@@ -99,6 +99,57 @@ export const api = {
 export type RemoteCommand = "newNote" | "toggleView" | "togglePin";
 
 // ---------------------------------------------------------------------------
+// Janelas
+// ---------------------------------------------------------------------------
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * O ponto caiu fora da janela? Usado pelo arraste de um card para decidir se
+ * ele vira janela própria.
+ *
+ * **Os dois lados precisam estar em pixels físicos.** Um `MouseEvent` reporta
+ * `screenX/screenY` em pixels CSS, enquanto a API de janela do Tauri devolve
+ * físicos: num monitor a 150% os dois diferem por um terço, e a comparação
+ * crua diria "fora" para um ponto bem no meio da janela.
+ */
+export function isOutsideBounds(point: Point, bounds: WindowBounds): boolean {
+  return (
+    point.x < bounds.x ||
+    point.y < bounds.y ||
+    point.x > bounds.x + bounds.width ||
+    point.y > bounds.y + bounds.height
+  );
+}
+
+/** Converte um ponto de tela em pixels CSS para pixels físicos. */
+export function toPhysicalPoint(point: Point, scale: number): Point {
+  return { x: Math.round(point.x * scale), y: Math.round(point.y * scale) };
+}
+
+/**
+ * A nota em que a janela principal abre: a mais recente que ainda não está
+ * numa janela própria. `null` quando não sobra nenhuma — abrir ali seria
+ * editar a mesma nota em dois lugares, cada um com seu autosave.
+ */
+export function pickInitialNote(
+  notes: Note[],
+  detached: ReadonlySet<string>,
+): Note | null {
+  return notes.find((note) => !detached.has(note.id)) ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Atalhos
 // ---------------------------------------------------------------------------
 

@@ -1,15 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createAutosave, createDeleteConfirm, createDiskQueue } from "./editor-core";
 import {
   api,
-  IS_DEV,
   matchesAccelerator,
   prettyAccelerator,
   type Config,
   type Note,
-  type ResizeDirection,
 } from "./shared";
+import { initWindowChrome, renderHints } from "./window-chrome";
 
 const editorEl = document.querySelector<HTMLTextAreaElement>("#editor")!;
 const hintsEl = document.querySelector<HTMLElement>("#hints")!;
@@ -25,6 +23,12 @@ const noteId = new URLSearchParams(window.location.search).get("id");
 
 let config: Config;
 let current: Note | null = null;
+/**
+ * A nota já foi para a lixeira. Fechar em seguida não pode salvar nem
+ * descartar: `flushSave` compara o texto da tela com o último conteúdo
+ * conhecido, veria diferença e **recriaria o arquivo recém-deletado**.
+ */
+let deleted = false;
 
 const disk = createDiskQueue();
 
@@ -58,6 +62,9 @@ const deleteConfirm = createDeleteConfirm(
       console.error("falha ao deletar nota", error);
       return;
     }
+    // O próprio `delete_note` fecha esta janela; o `closeSelf` cobre o caso
+    // de ela sobreviver por algum motivo, e é idempotente.
+    deleted = true;
     await closeSelf();
   },
 );
@@ -68,8 +75,10 @@ const deleteConfirm = createDeleteConfirm(
  * já zerou a esta altura).
  */
 async function closeSelf(): Promise<void> {
-  await autosave.flushSave();
-  await autosave.discardIfEmpty();
+  if (!deleted) {
+    await autosave.flushSave();
+    await autosave.discardIfEmpty();
+  }
   if (noteId) await api.undetachNote(noteId);
 }
 
@@ -120,34 +129,12 @@ function handleKeyDown(event: KeyboardEvent): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rodapé de dicas
-// ---------------------------------------------------------------------------
-
-function renderHints(): void {
-  const { shortcuts } = config;
-  hintsEl.replaceChildren();
-
-  // Mesma marca que a principal usa: com o app instalado aberto ao lado, é o
-  // que diz que esta janela também é da build de teste.
-  if (IS_DEV) {
-    const badge = document.createElement("span");
-    badge.className = "hint-dev";
-    badge.textContent = "dev";
-    hintsEl.append(badge);
-  }
-
-  const entries: Array<[string, string]> = [
-    [prettyAccelerator(shortcuts.deleteNote), "deletar"],
-    [prettyAccelerator(shortcuts.closeWindow), "fechar"],
-  ];
-  for (const [keys, label] of entries) {
-    const item = document.createElement("span");
-    const kbd = document.createElement("kbd");
-    kbd.textContent = keys;
-    item.append(kbd, document.createTextNode(` ${label}`));
-    hintsEl.append(item);
-  }
+/** Sem grid e sem pino aqui: o rodapé lista só o que é local desta janela. */
+function showHints(): void {
+  renderHints(hintsEl, [
+    [prettyAccelerator(config.shortcuts.deleteNote), "deletar"],
+    [prettyAccelerator(config.shortcuts.closeWindow), "fechar"],
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,48 +144,35 @@ function renderHints(): void {
 async function init(): Promise<void> {
   if (!noteId) return; // não deveria acontecer: a janela sempre nasce com ?id=
 
+  initWindowChrome();
+
   config = await api.getConfig();
   const notes = await api.listNotes();
   current = notes.find((note) => note.id === noteId) ?? null;
   editorEl.value = current?.content ?? "";
   editorEl.focus();
   editorEl.setSelectionRange(editorEl.value.length, editorEl.value.length);
-  renderHints();
+  showHints();
 
   editorEl.addEventListener("input", autosave.scheduleSave);
   document.addEventListener("keydown", handleKeyDown, true);
-
-  // Mesmo mecanismo de arraste/redimensionamento da principal: o Rust marca
-  // a interação primeiro pra o blur que ela provoca não ser tratado como
-  // clique fora.
-  for (const area of document.querySelectorAll<HTMLElement>("[data-drag]")) {
-    area.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      void api.beginDrag();
-    });
-  }
-
-  for (const handle of document.querySelectorAll<HTMLElement>("[data-resize]")) {
-    handle.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      const direction = handle.dataset.resize as ResizeDirection;
-      void api
-        .beginResize()
-        .then(() => getCurrentWindow().startResizeDragging(direction));
-    });
-  }
 
   document
     .querySelector<HTMLButtonElement>("#note-close")!
     .addEventListener("click", () => void closeSelf());
 
   window.addEventListener("blur", () => void autosave.flushSave());
-  await listen("app-hiding", () => void autosave.flushSave());
+  await listen("app-hiding", async () => {
+    if (deleted) return;
+    await autosave.flushSave();
+    await autosave.discardIfEmpty();
+    // Nota esvaziada é descartada igual à principal. Sem nota, esta janela
+    // não teria o que mostrar quando o app voltasse — fecha junto.
+    if (!current && noteId) await api.undetachNote(noteId);
+  });
   await listen<Config>("config-changed", (event) => {
     config = event.payload;
-    renderHints();
+    showHints();
   });
 }
 

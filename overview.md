@@ -59,8 +59,10 @@ usa outro programa.
   um card da grid pra fora** dos limites da janela e soltar — mesmo efeito, com um
   indicador visual acompanhando o cursor durante o arraste.
 - **Na grid**, o card de uma nota destacada tem visual diferente (borda
-  tracejada). Clicar nele **recolhe** a nota de volta — fecha a janela destacada
-  em vez de abrir mais uma vez dentro da principal.
+  tracejada). Clicar nele — ou abrir com `Enter` — **recolhe** a nota de volta,
+  fechando a janela destacada. Uma nota nunca está aberta em dois editores ao
+  mesmo tempo: seriam dois salvamentos automáticos sobre o mesmo arquivo, e o
+  último a gravar apagaria o que foi escrito no outro.
 - **A janela destacada só tem a nota** — sem grid, sem busca. O único comando
   local ali é **deletar**; os demais (nova nota, alternar visão, fixar) focam a
   principal e executam lá. Tem um **botão de fechar** no canto superior direito, e
@@ -68,8 +70,15 @@ usa outro programa.
   só dentro de uma janela destacada, nunca na principal.
 - **Fica sempre por cima e fora da barra de tarefas**, no mesmo perfil da janela
   principal — senão outro programa em foco cobriria a nota que se queria consultar.
+- **Deletar ali some com a janela**, e o "desfazer" aparece na principal — a
+  janela que confirmou a exclusão deixa de existir, mas a rede de segurança
+  vale em qualquer lugar do app. Deletar uma nota destacada pela grid fecha a
+  janela dela do mesmo jeito.
 - **A composição persiste**: quais notas estão destacadas, e a posição/tamanho de
-  cada janela, voltam exatamente iguais ao reabrir o app.
+  cada janela, voltam exatamente iguais ao reabrir o app. Nota que sumiu do disco
+  enquanto o app estava fechado sai da composição em vez de virar janela vazia.
+- **Nota destacada deixada em branco é descartada** quando o app esconde, igual
+  à principal — e a janela dela fecha junto, já que ficaria sem nota nenhuma.
 - **Perder o foco esconde tudo junto** — a principal e todas as destacadas. Trocar
   o foco entre janelas do próprio Notes nunca esconde nada; só sair do app esconde
   o conjunto inteiro (ver "Clicar fora da janela" abaixo).

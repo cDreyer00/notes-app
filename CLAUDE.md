@@ -38,6 +38,8 @@ project/
     shared.test.ts    testes das funções puras de shared.ts (Vitest)
     editor-core.ts    mecânica de editor compartilhada entre main.ts e note.ts
                        (fila de disco, autosave, confirmação de exclusão)
+    window-chrome.ts  o que toda janela frameless tem igual: alças de
+                       redimensionamento, áreas de arraste, rodapé de dicas
     main.ts           lógica da janela principal
     note.ts           lógica de uma janela de nota destacada
     settings.ts       lógica da janela de configurações
@@ -93,6 +95,32 @@ Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 - **A janela `settings` fica de fora do `is_notes_window`** — nunca fez parte do ciclo
   esconder/mostrar da principal, e a generalização pro multi-janela não mudou isso: focar as
   configurações ainda esconde a principal, como sempre esteve.
+- **`delete_note` fecha a janela destacada da nota**, venha o comando de onde vier. Uma
+  janela viva sobre um arquivo que foi pra lixeira recria a nota no primeiro autosave — e
+  pelo mesmo motivo, quem deleta de dentro de uma destacada marca `deleted` e **pula o
+  flush** ao fechar: `flushSave` compararia o texto da tela com o último conteúdo conhecido,
+  veria diferença e gravaria de volta.
+- **Deletar de uma destacada emite `note-deleted` pra principal**, que exibe o "desfazer".
+  O comando sabe quem chamou pelo `WebviewWindow` injetado; da principal ele não emite,
+  porque lá o toast já sai pelo caminho normal.
+- **`emit_to` e não `emit` para evento endereçado.** No Tauri v2 o `emit` de uma janela é
+  broadcast pra todas. E do lado do frontend o par obrigatório é
+  `getCurrentWebviewWindow().listen`: o `listen` global se registra como alvo "qualquer um",
+  que **não** casa com emissão endereçada (`manager/mod.rs`, `filter_target`).
+- **`undetach_note` sem janela limpa a composição na mão.** É o único caminho que não tem
+  `CloseRequested` pra disparar a limpeza; sem ele, uma entrada órfã (criação que falhou,
+  nota apagada por fora) deixaria o card tracejado e surdo ao clique pra sempre. O `setup`
+  ainda poda do `detached` o que não existe mais no disco.
+- **O arraste de card converte o ponto do mouse pra pixel físico antes de qualquer conta.**
+  `MouseEvent.screenX` vem em pixel CSS e a API de janela do Tauri fala em físico: a 150% os
+  dois diferem por um terço, e a comparação crua chamava de "fora da janela" um ponto no meio
+  dela. `isOutsideBounds`/`toPhysicalPoint` são puras justamente pra isso ter teste.
+- **`detach_note` relê a config depois de criar a janela.** A criação leva centenas de
+  milissegundos; gravar a cópia lida antes dela desfazia o que outra janela salvasse no
+  intervalo — a posição da principal, o pino.
+- **O `hide_all` agendado carrega um número de geração.** Trocar o foco entre janelas do app
+  agenda várias checagens; sem o contador, duas vencendo juntas rodariam o esconder (e o
+  `app-hiding`, que o frontend responde salvando e descartando) em duplicata.
 
 ## Dev e instalado convivem como dois apps
 
@@ -171,8 +199,8 @@ autor usando.
 ## Testes
 
 Cobrem **lógica pura**: `notes.rs` (arquivos e lixeira, com `tempfile`), `config.rs` (leitura
-do `settings.json`), `corner_fits` em `lib.rs` e as funções de `shared.ts` (atalhos, busca,
-tempo relativo).
+do `settings.json`), `corner_fits`/`saved_geometry`/`prune_detached` em `lib.rs` e as funções
+de `shared.ts` (atalhos, busca, tempo relativo, limites de janela e escolha da nota inicial).
 
 - **Não há E2E, de propósito.** Os bugs de janela — arrastar e redimensionar caindo no
   `Focused(false)` — vinham do comportamento nativo do Windows com foco, que nenhum driver

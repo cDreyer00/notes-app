@@ -1,17 +1,22 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createAutosave, createDeleteConfirm, createDiskQueue } from "./editor-core";
 import {
   api,
-  IS_DEV,
+  isOutsideBounds,
   matchesAccelerator,
+  pickInitialNote,
   prettyAccelerator,
   relativeTime,
   searchNotes,
+  toPhysicalPoint,
   type Config,
   type Note,
-  type ResizeDirection,
+  type RemoteCommand,
+  type WindowBounds,
 } from "./shared";
+import { hintItem, initWindowChrome, renderHints as renderHintsInto, type Hint } from "./window-chrome";
 
 type View = "editor" | "grid";
 
@@ -104,8 +109,13 @@ async function toggleView(): Promise<void> {
     return;
   }
 
-  const target =
-    notes.find((note) => note.id === currentId) ?? visibleNotes[selectedIndex];
+  // Uma nota destacada não pode ser reaberta aqui: seriam dois editores sobre
+  // o mesmo arquivo, cada um com seu autosave, e o último a gravar apagaria o
+  // texto do outro.
+  const target = [
+    notes.find((note) => note.id === currentId),
+    visibleNotes[selectedIndex],
+  ].find((note) => note && !detachedIds.has(note.id));
   openEditor(target ?? null);
 }
 
@@ -126,12 +136,19 @@ async function detachCurrent(): Promise<void> {
   if (!id) return;
 
   await api.detachNote(id);
+  // A nota passou a ser de outra janela: deixar o editor daqui apontando pra
+  // ela faria um `toggleView` seguinte reabri-la em dose dupla.
+  currentId = null;
+  editorEl.value = "";
   await showGrid();
 }
 
+/** Enter na grid: mesmo efeito do clique no card, inclusive o de recolher. */
 async function openSelected(): Promise<void> {
   const note = visibleNotes[selectedIndex];
-  if (note) openEditor(note);
+  if (!note) return;
+  if (detachedIds.has(note.id)) await api.undetachNote(note.id);
+  else openEditor(note);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +164,6 @@ function renderGrid(): void {
 
     const card = document.createElement("div");
     card.className = isDetached ? "card card-detached" : "card";
-    card.dataset.id = note.id;
 
     const body = document.createElement("p");
     body.className = "card-body";
@@ -161,10 +177,7 @@ function renderGrid(): void {
     // Nota destacada já está aberta em janela própria: clicar aqui recolhe
     // ela de volta, em vez de abrir mais uma vez dentro da principal.
     card.addEventListener("click", () => {
-      if (suppressNextClick) {
-        suppressNextClick = false;
-        return;
-      }
+      if (suppressNextClick) return;
       if (isDetached) void api.undetachNote(note.id);
       else openEditor(note);
     });
@@ -194,9 +207,18 @@ let dragNote: Note | null = null;
 let dragStartX = 0;
 let dragStartY = 0;
 let dragActive = false;
-let dragBounds: { x: number; y: number; width: number; height: number } | null = null;
+/** Limites da janela em pixels físicos, congelados no início do arraste. */
+let dragBounds: WindowBounds | null = null;
+/** Pixels físicos por pixel CSS; o evento do mouse reporta em CSS. */
+let dragScale = 1;
 let ghostEl: HTMLElement | null = null;
-/** Um arraste que terminou não pode também disparar o `click` nativo do mouseup. */
+/**
+ * Um arraste que terminou não pode também disparar o `click` nativo do
+ * mouseup. A flag é desarmada no `mousedown` seguinte, e não no clique que
+ * ela cancela: soltar fora da janela (o caso mais comum aqui) ou em cima da
+ * busca não gera clique nenhum em card, e a flag ficaria armada engolindo o
+ * próximo clique de verdade.
+ */
 let suppressNextClick = false;
 
 function positionGhost(x: number, y: number): void {
@@ -234,10 +256,15 @@ async function onCardDragMove(event: MouseEvent): Promise<void> {
 
     dragActive = true;
     const win = getCurrentWindow();
-    const [position, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+    const [position, size, scale] = await Promise.all([
+      win.outerPosition(),
+      win.outerSize(),
+      win.scaleFactor(),
+    ]);
     // O arraste não move a janela principal; os limites capturados agora
     // continuam valendo até o mouseup.
     dragBounds = { x: position.x, y: position.y, width: size.width, height: size.height };
+    dragScale = scale;
     createGhost(note, event.clientX, event.clientY);
   }
 
@@ -251,23 +278,23 @@ function onCardDragEnd(event: MouseEvent): void {
   const note = dragNote;
   const wasActive = dragActive;
   const bounds = dragBounds;
+  const scale = dragScale;
   ghostEl?.remove();
   ghostEl = null;
   dragNote = null;
   dragActive = false;
   dragBounds = null;
 
-  if (!note || !wasActive) return;
+  if (!note || !wasActive || !bounds) return;
   suppressNextClick = true;
 
-  const outside =
-    bounds !== null &&
-    (event.screenX < bounds.x ||
-      event.screenY < bounds.y ||
-      event.screenX > bounds.x + bounds.width ||
-      event.screenY > bounds.y + bounds.height);
-
-  if (outside) void api.detachNote(note.id, event.screenX, event.screenY);
+  // O ponto do drop vira físico antes de qualquer conta: os limites da janela
+  // vêm em físico, e o Rust também trata `x`/`y` assim ao posicionar a janela
+  // nova sob o cursor.
+  const drop = toPhysicalPoint({ x: event.screenX, y: event.screenY }, scale);
+  if (isOutsideBounds(drop, bounds)) {
+    void api.detachNote(note.id, drop.x, drop.y);
+  }
 }
 
 function updateSelection(): void {
@@ -474,7 +501,7 @@ function handleKeyDown(event: KeyboardEvent): void {
 
 function renderHints(): void {
   const { shortcuts } = config;
-  const entries: Array<[string, string]> =
+  const hints: Hint[] =
     view === "grid"
       ? [
           // Navegar e abrir vêm primeiro: é o que se faz na grid, e sem a dica
@@ -490,35 +517,15 @@ function renderHints(): void {
           [prettyAccelerator(shortcuts.deleteNote), "deletar"],
         ];
 
-  hintsEl.replaceChildren();
-
-  // Com o app instalado aberto ao lado, as duas janelas são idênticas. Sem
-  // esta marca, dá para editar as notas de teste achando que são as de verdade.
-  if (IS_DEV) {
-    const badge = document.createElement("span");
-    badge.className = "hint-dev";
-    badge.textContent = "dev";
-    hintsEl.append(badge);
-  }
-
-  for (const [keys, label] of entries) {
-    const item = document.createElement("span");
-    const kbd = document.createElement("kbd");
-    kbd.textContent = keys;
-    item.append(kbd, document.createTextNode(` ${label}`));
-    hintsEl.append(item);
-  }
+  renderHintsInto(hintsEl, hints);
 
   // O pino precisa de sinal visível: sem ele, a janela que não some mais
   // parece defeito em vez de escolha.
-  const pin = document.createElement("span");
-  pin.className = config.pinned ? "hint-pin active" : "hint-pin";
-  const pinKey = document.createElement("kbd");
-  pinKey.textContent = prettyAccelerator(shortcuts.togglePin);
-  pin.append(
-    pinKey,
-    document.createTextNode(config.pinned ? " fixada" : " fixar"),
+  const pin = hintItem(
+    prettyAccelerator(shortcuts.togglePin),
+    config.pinned ? "fixada" : "fixar",
   );
+  pin.className = config.pinned ? "hint-pin active" : "hint-pin";
   hintsEl.append(pin);
 }
 
@@ -536,6 +543,8 @@ async function togglePin(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function init(): Promise<void> {
+  initWindowChrome();
+
   config = await api.getConfig();
   detachedIds = new Set(config.detached.map((entry) => entry.noteId));
   notes = await api.listNotes();
@@ -546,7 +555,7 @@ async function init(): Promise<void> {
   if (notes.length === 0) {
     openEditor(null);
   } else {
-    const initial = notes.find((note) => !detachedIds.has(note.id));
+    const initial = pickInitialNote(notes, detachedIds);
     if (initial) openEditor(initial);
     else await showGrid();
   }
@@ -559,29 +568,15 @@ async function init(): Promise<void> {
 
   document.addEventListener("keydown", handleKeyDown, true);
 
-  // O arraste passa pelo Rust para que o blur que ele provoca não seja
-  // confundido com "clicou fora" e esconda a janela no meio do movimento.
-  for (const area of document.querySelectorAll<HTMLElement>("[data-drag]")) {
-    area.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      void api.beginDrag();
-    });
-  }
-
-  // Mesma história para as bordas: as nativas são tratadas pelo sistema e a
-  // janela sumiria ao começar o redimensionamento. O Rust marca a interação
-  // primeiro; só depois o resize começa de fato.
-  for (const handle of document.querySelectorAll<HTMLElement>("[data-resize]")) {
-    handle.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      const direction = handle.dataset.resize as ResizeDirection;
-      void api
-        .beginResize()
-        .then(() => getCurrentWindow().startResizeDragging(direction));
-    });
-  }
+  // Todo clique novo na grid começa com a supressão desarmada — ver a nota
+  // em `suppressNextClick`. Em captura, para vir antes do handler do card.
+  gridEl.addEventListener(
+    "mousedown",
+    () => {
+      suppressNextClick = false;
+    },
+    true,
+  );
 
   // A janela some ao perder o foco; grava antes que o debounce expire.
   window.addEventListener("blur", () => void flushSave());
@@ -602,16 +597,30 @@ async function init(): Promise<void> {
     detachedIds = new Set(event.payload);
     if (view === "grid") renderGrid();
   });
+  // Os dois eventos abaixo são endereçados a esta janela (`emit_to` no Rust),
+  // e um `listen` global se registra como alvo "qualquer um" — que não casa
+  // com emissão endereçada. Por isso vão pelo listener da própria janela.
+  const thisWindow = getCurrentWebviewWindow();
+
+  // Nota deletada de dentro de uma janela destacada: lá não existe grid onde
+  // pôr o "desfazer", e sem ele o Enter da confirmação seria irreversível na
+  // prática. O toast é sempre desta janela.
+  await thisWindow.listen<string>("note-deleted", (event) => {
+    notes = notes.filter((note) => note.id !== event.payload);
+    if (currentId === event.payload) {
+      currentId = null;
+      editorEl.value = "";
+    }
+    if (view === "grid") renderGrid();
+    showUndo(event.payload);
+  });
   // Comando que uma janela de nota destacada não podia executar sozinha —
   // aqui é como se o atalho tivesse sido pressionado nesta janela mesmo.
-  await listen<"newNote" | "toggleView" | "togglePin">(
-    "remote-command",
-    (event) => {
-      if (event.payload === "newNote") void startNewNote();
-      else if (event.payload === "toggleView") void toggleView();
-      else if (event.payload === "togglePin") void togglePin();
-    },
-  );
+  await thisWindow.listen<RemoteCommand>("remote-command", (event) => {
+    if (event.payload === "newNote") void startNewNote();
+    else if (event.payload === "toggleView") void toggleView();
+    else if (event.payload === "togglePin") void togglePin();
+  });
 }
 
 void init();

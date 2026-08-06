@@ -3,7 +3,7 @@ mod notes;
 
 use config::{Config, DetachedWindow, Shortcuts};
 use notes::Note;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -61,6 +61,12 @@ const DRAG_GRACE: Duration = Duration::from_millis(700);
 /// quase imediato — a checagem, feita só quando o prazo vence, não depende da
 /// ordem de chegada dos dois eventos.
 const HIDE_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// Cada blur agenda uma checagem; trocar o foco entre janelas do app agenda
+/// várias em sequência. O contador faz valer só a última: sem ele, duas
+/// checagens vencendo juntas rodariam `hide_all` duas vezes — e com ela o
+/// `app-hiding`, que o frontend responde salvando e descartando nota vazia.
+struct HideGeneration(Mutex<u64>);
 
 /// Tamanho padrão de uma janela de nota destacada, usado quando ela nasce sem
 /// tamanho salvo (primeira vez que aquela nota é destacada).
@@ -257,9 +263,26 @@ fn show_all(app: &AppHandle) {
 /// estado no fim do prazo, o que também cobre trocar de janela dentro do
 /// próprio app sem esconder nada.
 fn schedule_hide_check(app: &AppHandle) {
+    let Some(state) = app.try_state::<HideGeneration>() else {
+        return;
+    };
+    let Ok(mut counter) = state.0.lock() else {
+        return;
+    };
+    *counter += 1;
+    let generation = *counter;
+    drop(counter);
+
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(HIDE_DEBOUNCE);
+        // Outro blur chegou depois deste: quem decide é a checagem dele.
+        let current = handle
+            .try_state::<HideGeneration>()
+            .and_then(|state| state.0.lock().ok().map(|counter| *counter));
+        if current != Some(generation) {
+            return;
+        }
         if !any_notes_window_focused(&handle) && !is_pinned(&handle) {
             hide_all(&handle);
         }
@@ -307,7 +330,8 @@ fn show_settings(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         // A janela é reaproveitada; sem isto ela reabriria com dados velhos.
-        let _ = window.emit("settings-shown", ());
+        // Endereçado, não broadcast — ver a nota em `focus_main`.
+        let _ = app.emit_to("settings", "settings-shown", ());
     }
 }
 
@@ -317,6 +341,29 @@ fn show_settings(app: &AppHandle) {
 
 fn detached_ids(cfg: &Config) -> Vec<String> {
     cfg.detached.iter().map(|d| d.note_id.clone()).collect()
+}
+
+/// Descarta as entradas cuja nota não existe mais no disco. Sem isto, a
+/// abertura seguinte criaria uma janela para um `.md` que sumiu — e o card
+/// correspondente ficaria tracejado na grid sem nada por trás.
+fn prune_detached(detached: Vec<DetachedWindow>, on_disk: &HashSet<String>) -> Vec<DetachedWindow> {
+    detached
+        .into_iter()
+        .filter(|entry| on_disk.contains(&entry.note_id))
+        .collect()
+}
+
+/// Fecha a janela de uma nota, se ela estiver destacada. Sempre por
+/// `close()`, nunca `destroy()`: é o `CloseRequested` que limpa a composição
+/// salva, e ele precisa acontecer venha o fechamento de onde vier.
+fn close_note_window(app: &AppHandle, note_id: &str) -> bool {
+    match app.get_webview_window(&format!("note-{note_id}")) {
+        Some(window) => {
+            let _ = window.close();
+            true
+        }
+        None => false,
+    }
 }
 
 /// Constrói (sem mostrar) a janela de uma nota destacada, no mesmo perfil da
@@ -500,10 +547,24 @@ fn save_note(app: AppHandle, id: String, content: String) -> Result<u128, String
     notes::save(&cfg.notes_dir, &id, &content)
 }
 
+/// Deletar acontece de três lugares (editor da principal, card da grid,
+/// janela destacada) e em todos eles a nota deixa de existir. Fechar aqui a
+/// janela destacada dela, se houver, é o que impede o caso feio: uma janela
+/// viva editando um arquivo que já foi para a lixeira — o primeiro autosave
+/// dali recriaria a nota deletada.
 #[tauri::command]
-fn delete_note(app: AppHandle, id: String) -> Result<(), String> {
+fn delete_note(window: WebviewWindow, app: AppHandle, id: String) -> Result<(), String> {
     let cfg = config::load(&app)?;
-    notes::delete(&cfg.notes_dir, &id)
+    notes::delete(&cfg.notes_dir, &id)?;
+    close_note_window(&app, &id);
+
+    // Quem deletou de dentro de uma janela destacada fica sem o "desfazer": a
+    // janela morre no comando e o toast mora na grid. A principal exibe por
+    // ela — é a rede de segurança que a exclusão promete em qualquer lugar.
+    if window.label() != "main" {
+        let _ = app.emit_to("main", "note-deleted", &id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -618,17 +679,23 @@ async fn detach_note(
     x: Option<i32>,
     y: Option<i32>,
 ) -> Result<(), String> {
+    // O id vira label de janela, query string e chave no `settings.json`.
+    // Chega pronto do nosso frontend, mas é a mesma validação que todo o
+    // resto do app aplica antes de deixar um id virar caminho.
+    notes::validate_id(&id)?;
+
     let label = format!("note-{id}");
     if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
         return Ok(());
     }
 
-    let mut cfg = config::load(&app)?;
-    let existing = cfg.detached.iter().find(|d| d.note_id == id).cloned();
-    let saved_pos = existing.as_ref().and_then(|e| e.pos);
-    let saved_size = existing.as_ref().and_then(|e| e.size);
+    // Só a geometria é lida agora — a config volta a ser lida lá embaixo, na
+    // hora de gravar, porque criar a janela leva tempo demais para confiar
+    // nesta cópia.
+    let (saved_pos, saved_size) = saved_geometry(&config::load(&app)?, &label);
 
     // Só a construção em si roda na thread solta. Posicionar, mostrar e
     // focar são operações leves que, feitas fora da thread principal, não
@@ -674,7 +741,12 @@ async fn detach_note(
     })
     .map_err(|e| format!("não foi possível exibir a janela: {e}"))?;
 
-    if existing.is_none() {
+    // Relida só agora: entre o começo deste comando e aqui passaram-se as
+    // centenas de milissegundos da criação da janela, e gravar por cima de
+    // uma cópia daquela idade desfaria o que outra janela salvou no meio —
+    // a posição da principal ao ser movida, o pino, outra nota destacada.
+    let mut cfg = config::load(&app)?;
+    if !cfg.detached.iter().any(|entry| entry.note_id == id) {
         cfg.detached.push(DetachedWindow {
             note_id: id,
             pos: None,
@@ -689,13 +761,18 @@ async fn detach_note(
 /// Foca a principal e pede que ela execute um comando por conta própria.
 /// Usado pelas janelas de nota destacada: lá, só deletar é local — nova
 /// nota, alternar visão e fixar sempre acontecem na principal.
+///
+/// `emit_to` e não `emit`: no Tauri v2 o `emit` de uma janela é broadcast
+/// para todas, então o comando chegaria também às destacadas. Hoje nenhuma
+/// escuta, mas elas compartilham o resto da fiação com a principal — e o dia
+/// em que uma copiasse este listener, o comando rodaria N vezes.
 #[tauri::command]
 fn focus_main(app: AppHandle, action: String) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.unminimize();
         let _ = main.show();
         let _ = main.set_focus();
-        let _ = main.emit("remote-command", action);
+        let _ = app.emit_to("main", "remote-command", action);
     }
 }
 
@@ -703,11 +780,18 @@ fn focus_main(app: AppHandle, action: String) {
 /// acontece no `CloseRequested` de `attach_notes_window_events`, disparado
 /// por este `close()` — um único caminho, seja o fechamento pedido daqui
 /// (clique no card da grid) ou de dentro da própria janela destacada.
+///
+/// Sem janela, a entrada salva está órfã: a criação falhou, ou a nota sumiu
+/// do disco por fora do app. Aí a limpeza é feita direto, senão o card
+/// ficaria tracejado para sempre e o clique nele não teria efeito nenhum —
+/// sem janela não há `CloseRequested` para disparar.
 #[tauri::command]
-fn undetach_note(app: AppHandle, id: String) {
-    if let Some(window) = app.get_webview_window(&format!("note-{id}")) {
-        let _ = window.close();
+fn undetach_note(app: AppHandle, id: String) -> Result<(), String> {
+    notes::validate_id(&id)?;
+    if !close_note_window(&app, &id) {
+        cleanup_detached(&app, &id);
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -807,15 +891,27 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            let cfg = config::load(&handle).unwrap_or_default();
+            let mut cfg = config::load(&handle).unwrap_or_default();
 
             app.manage(ShortcutTiming(Mutex::new(None)));
             app.manage(DragState(Mutex::new(HashMap::new())));
+            app.manage(HideGeneration(Mutex::new(0)));
 
             notes::ensure_dir(&cfg.notes_dir).ok();
             // Lixeira vencida sai na abertura: é o único momento garantido em
             // que o app roda sem ninguém esperando por ele.
             let _ = notes::purge_trash(&cfg.notes_dir, cfg.trash_retention_days);
+
+            // Mesma oportunidade para a composição salva: nota que sumiu do
+            // disco enquanto o app estava fechado não vira janela fantasma.
+            if let Ok(on_disk) = notes::list(&cfg.notes_dir) {
+                let ids: HashSet<String> = on_disk.into_iter().map(|note| note.id).collect();
+                let before = cfg.detached.len();
+                cfg.detached = prune_detached(std::mem::take(&mut cfg.detached), &ids);
+                if cfg.detached.len() != before {
+                    let _ = config::save(&handle, &cfg);
+                }
+            }
             build_tray(&handle)?;
 
             if let Err(err) = register_toggle_shortcut(&handle, &cfg.shortcuts.toggle_app) {
@@ -961,5 +1057,56 @@ mod tests {
         assert_eq!(saved_geometry(&cfg, "note-n2"), (None, None));
         // Nota nunca destacada, sem entrada nenhuma: não inventa geometria.
         assert_eq!(saved_geometry(&cfg, "note-n3"), (None, None));
+    }
+
+    // -----------------------------------------------------------------------
+    // Composição salva
+    // -----------------------------------------------------------------------
+
+    fn entry(note_id: &str) -> DetachedWindow {
+        DetachedWindow {
+            note_id: note_id.into(),
+            pos: None,
+            size: None,
+        }
+    }
+
+    /// A nota some do disco (deletada por fora, pasta trocada) e a entrada
+    /// fica para trás: sem a poda, o boot criaria uma janela vazia e o card
+    /// na grid nasceria tracejado sem nada por trás.
+    #[test]
+    fn poda_as_notas_destacadas_que_sumiram_do_disco() {
+        let salvas = vec![entry("n1"), entry("n2"), entry("n3")];
+        let no_disco: HashSet<String> = ["n1", "n3"].iter().map(|id| id.to_string()).collect();
+
+        let restou = prune_detached(salvas, &no_disco);
+
+        assert_eq!(restou.len(), 2);
+        assert_eq!(restou[0].note_id, "n1");
+        assert_eq!(restou[1].note_id, "n3");
+    }
+
+    #[test]
+    fn poda_preserva_a_geometria_de_quem_fica() {
+        let salvas = vec![DetachedWindow {
+            note_id: "n1".into(),
+            pos: Some((10, 20)),
+            size: Some((300, 200)),
+        }];
+        let no_disco: HashSet<String> = ["n1"].iter().map(|id| id.to_string()).collect();
+
+        let restou = prune_detached(salvas, &no_disco);
+
+        assert_eq!(restou[0].pos, Some((10, 20)));
+        assert_eq!(restou[0].size, Some((300, 200)));
+    }
+
+    /// Disco ilegível não pode ser lido como "nenhuma nota existe" — quem
+    /// chama só poda quando o `list` deu certo, e aqui fica registrado que
+    /// uma lista vazia realmente zera tudo.
+    #[test]
+    fn sem_nota_nenhuma_no_disco_nao_sobra_composicao() {
+        let restou = prune_detached(vec![entry("n1")], &HashSet::new());
+        assert!(restou.is_empty());
     }
 }
