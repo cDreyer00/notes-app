@@ -52,6 +52,16 @@ fn is_dragging(app: &AppHandle) -> bool {
 // Posição da janela
 // ---------------------------------------------------------------------------
 
+/// O canto da janela cabe neste monitor? A folga de 8px para trás tolera o
+/// desalinhamento de quem encostou a janela na borda; os 40px à frente garantem
+/// que sobre faixa de arraste visível para trazê-la de volta.
+fn corner_fits(origin: (i32, i32), size: (u32, u32), x: i32, y: i32) -> bool {
+    x >= origin.0 - 8
+        && y >= origin.1 - 8
+        && x < origin.0 + size.0 as i32 - 40
+        && y < origin.1 + size.1 as i32 - 40
+}
+
 /// Monitores mudam (notebook que desacopla, TV desligada). Uma posição salva
 /// fora de qualquer tela deixaria a janela invisível para sempre.
 fn position_is_visible(window: &WebviewWindow, x: i32, y: i32) -> bool {
@@ -62,10 +72,7 @@ fn position_is_visible(window: &WebviewWindow, x: i32, y: i32) -> bool {
     monitors.iter().any(|monitor| {
         let origin = monitor.position();
         let size = monitor.size();
-        x >= origin.x - 8
-            && y >= origin.y - 8
-            && x < origin.x + size.width as i32 - 40
-            && y < origin.y + size.height as i32 - 40
+        corner_fits((origin.x, origin.y), (size.width, size.height), x, y)
     })
 }
 
@@ -525,4 +532,44 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corner_fits;
+
+    const PRIMARIO: ((i32, i32), (u32, u32)) = ((0, 0), (1920, 1080));
+    /// Segundo monitor à esquerda: origem negativa, o caso que o Windows produz.
+    const ESQUERDA: ((i32, i32), (u32, u32)) = ((-1920, 0), (1920, 1080));
+
+    #[test]
+    fn posicao_dentro_do_monitor_e_valida() {
+        assert!(corner_fits(PRIMARIO.0, PRIMARIO.1, 0, 0));
+        assert!(corner_fits(PRIMARIO.0, PRIMARIO.1, 900, 500));
+        assert!(corner_fits(ESQUERDA.0, ESQUERDA.1, -1000, 300));
+    }
+
+    /// O monitor sumiu (notebook desacoplado): a posição salva do que era o
+    /// segundo monitor não pode passar no teste do que sobrou.
+    #[test]
+    fn posicao_de_monitor_que_sumiu_e_recusada() {
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, -1000, 300));
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, 2400, 300));
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, 900, 2000));
+    }
+
+    /// Janela encostada na borda de baixo ou da direita não conta como visível:
+    /// sem a faixa de arraste na tela não haveria como trazê-la de volta.
+    #[test]
+    fn canto_colado_na_borda_nao_conta_como_visivel() {
+        assert!(corner_fits(PRIMARIO.0, PRIMARIO.1, 1879, 1039));
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, 1880, 1039));
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, 1879, 1040));
+    }
+
+    #[test]
+    fn folga_pequena_para_fora_e_tolerada() {
+        assert!(corner_fits(PRIMARIO.0, PRIMARIO.1, -8, -8));
+        assert!(!corner_fits(PRIMARIO.0, PRIMARIO.1, -9, 0));
+    }
 }

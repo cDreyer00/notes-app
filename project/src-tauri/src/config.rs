@@ -80,12 +80,18 @@ pub fn default_notes_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("notes"))
 }
 
-/// Lê a configuração do disco. Configuração corrompida ou ausente cai no padrão
-/// em vez de derrubar o app — perder preferências é aceitável, não abrir não é.
+/// Configuração corrompida cai no padrão em vez de derrubar o app — perder
+/// preferências é aceitável, não abrir não é.
+fn parse(raw: &str) -> Config {
+    serde_json::from_str::<Config>(raw).unwrap_or_default()
+}
+
+/// Lê a configuração do disco. Arquivo ausente também cai no padrão: é o caso
+/// da primeira execução.
 pub fn load(app: &AppHandle) -> Result<Config, String> {
     let path = config_path(app)?;
     let mut cfg = match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<Config>(&raw).unwrap_or_default(),
+        Ok(raw) => parse(&raw),
         Err(_) => Config::default(),
     };
     if cfg.notes_dir.as_os_str().is_empty() {
@@ -98,4 +104,73 @@ pub fn save(app: &AppHandle, cfg: &Config) -> Result<(), String> {
     let path = config_path(app)?;
     let raw = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     fs::write(&path, raw).map_err(|e| format!("não foi possível gravar {path:?}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O caso que motivou o `#[serde(default)]` no container: acrescentar um
+    /// comando não pode invalidar o settings.json de quem já usa o app.
+    #[test]
+    fn atalho_novo_nao_apaga_os_atalhos_ja_configurados() {
+        let antigo = r#"{
+            "notesDir": "D:/notas",
+            "shortcuts": {
+                "toggleApp": "Control+Alt+N",
+                "toggleView": "Control+Tab",
+                "newNote": "Control+E",
+                "deleteNote": "Control+D"
+            },
+            "autostart": false,
+            "trashRetentionDays": 7
+        }"#;
+
+        let cfg = parse(antigo);
+        assert_eq!(cfg.shortcuts.toggle_app, "Control+Alt+N");
+        assert_eq!(cfg.shortcuts.new_note, "Control+E");
+        assert_eq!(cfg.autostart, false);
+        assert_eq!(cfg.trash_retention_days, 7);
+        assert_eq!(cfg.notes_dir, PathBuf::from("D:/notas"));
+        // O campo que ainda não existia no arquivo assume o padrão.
+        assert_eq!(cfg.shortcuts.toggle_pin, Shortcuts::default().toggle_pin);
+        assert_eq!(cfg.pinned, false);
+    }
+
+    #[test]
+    fn arquivo_corrompido_cai_no_padrao_em_vez_de_falhar() {
+        for raw in ["", "{", "null", r#"{"autostart": "talvez"}"#] {
+            let cfg = parse(raw);
+            assert_eq!(cfg.autostart, Config::default().autostart, "raw: {raw:?}");
+            assert_eq!(cfg.trash_retention_days, 30);
+        }
+    }
+
+    #[test]
+    fn campo_desconhecido_nao_derruba_a_leitura() {
+        let cfg = parse(r#"{"autostart": false, "featureQueNaoExisteMais": 3}"#);
+        assert_eq!(cfg.autostart, false);
+    }
+
+    /// O frontend recebe a config em camelCase; o roundtrip garante que gravar
+    /// e ler de volta não perde nada.
+    #[test]
+    fn roundtrip_preserva_a_configuracao() {
+        let mut cfg = Config::default();
+        cfg.notes_dir = PathBuf::from("C:/notas");
+        cfg.window_pos = Some((120, -40));
+        cfg.window_size = Some((640, 480));
+        cfg.pinned = true;
+        cfg.trash_retention_days = 0;
+
+        let raw = serde_json::to_string(&cfg).expect("serializar");
+        assert!(raw.contains("trashRetentionDays"), "esperado camelCase: {raw}");
+
+        let lido = parse(&raw);
+        assert_eq!(lido.window_pos, Some((120, -40)));
+        assert_eq!(lido.window_size, Some((640, 480)));
+        assert_eq!(lido.pinned, true);
+        assert_eq!(lido.trash_retention_days, 0);
+        assert_eq!(lido.notes_dir, PathBuf::from("C:/notas"));
+    }
 }

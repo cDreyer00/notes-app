@@ -13,6 +13,9 @@ use o @overview.md como ponto de partida
 - **Atualize o `overview.md` sempre que pertinente**, na mesma leva da mudança. Ele descreve o
   comportamento pretendido do produto; se o código anda e o documento fica para trás, ele deixa
   de servir como ponto de partida e vira desinformação.
+- Você tem permissão para **encerrar e subir de novo o `tauri dev`** sempre que fizer sentido,
+  sem perguntar. Encerrar o comando não mata os filhos: o `notes.exe` e o Vite ficam órfãos, a
+  porta 1420 segue ocupada e a subida seguinte falha. Limpe os dois antes de subir.
 
 ---
 
@@ -35,6 +38,7 @@ project/
   settings.html       janela de configurações
   src/
     shared.ts         API de comandos, parser de atalhos, busca, tempo relativo
+    shared.test.ts    testes das funções puras de shared.ts (Vitest)
     main.ts           lógica da janela de notas
     settings.ts       lógica da janela de configurações
     styles.css        tema dark, usado pelas duas janelas
@@ -43,6 +47,8 @@ project/
     config.rs         leitura/escrita de settings.json
     notes.rs          CRUD dos arquivos .md e lixeira
 ```
+
+Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 
 ## Decisões que não são óbvias no código
 
@@ -68,10 +74,30 @@ project/
   `WebviewWindow` do Rust — só no `Window` interno, inacessível, e o `ResizeDirection` nem é
   reexportado pelo crate.
 
+## Testes
+
+Cobrem **lógica pura**: `notes.rs` (arquivos e lixeira, com `tempfile`), `config.rs` (leitura
+do `settings.json`), `corner_fits` em `lib.rs` e as funções de `shared.ts` (atalhos, busca,
+tempo relativo).
+
+- **Não há E2E, de propósito.** Os bugs de janela — arrastar e redimensionar caindo no
+  `Focused(false)` — vinham do comportamento nativo do Windows com foco, que nenhum driver
+  headless reproduz. Um E2E aqui custaria caro e daria falso conforto. Essa parte se verifica
+  com a mão, rodando o app.
+- **Os testes de disco não tocam na pasta real de notas**: cada um roda numa `TempDir` própria.
+- Bug corrigido vira teste. Os que já existem guardam casos que aconteceram de verdade: id com
+  `../` virando caminho, restaurar nota que não foi deletada, idade da lixeira medida pelo
+  mtime, `settings.json` antigo zerando as preferências ao ganhar um atalho novo.
+- `matchesAccelerator` é testado com um objeto no formato do `KeyboardEvent`, não com um DOM
+  de verdade — só as quatro flags de modificador e a tecla importam.
+
 ## Comandos
 
 ```
 npm run tauri dev      roda o app (janela inicia oculta — use o atalho ou o tray)
+npm test               testes do frontend (Vitest)
+npm run test:watch     idem, em modo watch
 npm run build          checa tipos e compila o frontend
+cargo test             testes do backend (dentro de src-tauri/)
 cargo check            valida o backend (dentro de src-tauri/)
 ```

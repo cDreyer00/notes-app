@@ -61,8 +61,20 @@ npm install
 npm run tauri dev      # roda o app (a janela inicia oculta — use o atalho ou a bandeja)
 npm run tauri build    # gera o instalador
 npm run build          # checa tipos e compila o frontend
+npm test               # testes do frontend (Vitest)
+cd src-tauri && cargo test    # testes do backend
 cd src-tauri && cargo check   # valida o backend
 ```
+
+### Testes
+
+Cobrem a lógica pura dos dois lados: manipulação dos arquivos e da lixeira, leitura do
+`settings.json`, e o parser de atalhos, a busca e o tempo relativo do frontend. Os testes de
+disco rodam em pasta temporária — nunca na sua pasta de notas.
+
+Não há testes ponta a ponta. O que sobra sem eles — arrastar, redimensionar e esconder ao
+perder o foco — depende do comportamento nativo do Windows com foco de janela, que um driver
+headless não reproduz de forma fiel; essa parte se verifica rodando o app.
 
 ### Estrutura
 
@@ -72,6 +84,7 @@ project/
   settings.html       janela de configurações
   src/
     shared.ts         API de comandos, parser de atalhos, busca, tempo relativo
+    shared.test.ts    testes das funções puras de shared.ts
     main.ts           lógica da janela de notas
     settings.ts       lógica da janela de configurações
     styles.css        tema dark, usado pelas duas janelas

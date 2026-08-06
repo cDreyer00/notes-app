@@ -270,3 +270,238 @@ pub fn move_all(from: &Path, to: &Path) -> Result<usize, String> {
     }
     Ok(moved)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const DAY: u128 = 86_400_000;
+
+    fn workspace() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().expect("pasta temporária");
+        let dir = temp.path().join("notes");
+        ensure_dir(&dir).expect("criar pasta de notas");
+        (temp, dir)
+    }
+
+    /// Cria a nota já com conteúdo, que é o estado normal fora do editor.
+    fn note_with(dir: &Path, content: &str) -> String {
+        let note = create(dir).expect("criar nota");
+        save(dir, &note.id, content).expect("gravar nota");
+        note.id
+    }
+
+    fn ids(dir: &Path) -> Vec<String> {
+        list(dir)
+            .expect("listar")
+            .into_iter()
+            .map(|note| note.id)
+            .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Ids
+    // -----------------------------------------------------------------------
+
+    /// O id vem do frontend em todo comando; um caminho relativo aqui daria
+    /// escrita fora da pasta de notas.
+    #[test]
+    fn id_fora_do_alfabeto_e_recusado() {
+        let (_temp, dir) = workspace();
+
+        for id in ["../evil", "sub/nota", "..", "nota.md", "a b", "", "n1\\x"] {
+            assert!(save(&dir, id, "x").is_err(), "aceitou o id {id:?}");
+            assert!(delete(&dir, id).is_err(), "aceitou o id {id:?}");
+            assert!(purge(&dir, id).is_err(), "aceitou o id {id:?}");
+        }
+
+        assert!(save(&dir, &"n".repeat(65), "x").is_err());
+        assert!(save(&dir, &"n".repeat(64), "x").is_ok());
+    }
+
+    #[test]
+    fn create_nao_repete_id() {
+        let (_temp, dir) = workspace();
+        let mut vistos = std::collections::HashSet::new();
+
+        for _ in 0..50 {
+            let note = create(&dir).expect("criar nota");
+            assert!(vistos.insert(note.id.clone()), "id repetido: {}", note.id);
+        }
+        assert_eq!(list(&dir).expect("listar").len(), 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Listagem
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn list_ignora_o_que_nao_e_nota() {
+        let (_temp, dir) = workspace();
+        let id = note_with(&dir, "conteúdo");
+
+        fs::write(dir.join("leia-me.txt"), "não é nota").expect("gravar txt");
+        fs::write(dir.join("nota com espaço.md"), "id inválido").expect("gravar md torto");
+        ensure_dir(&dir.join("sub.md")).expect("criar pasta");
+        delete(&dir, &note_with(&dir, "deletada")).expect("deletar");
+
+        assert_eq!(ids(&dir), vec![id]);
+    }
+
+    #[test]
+    fn list_traz_a_mais_recente_primeiro() {
+        let (_temp, dir) = workspace();
+        let antiga = note_with(&dir, "antiga");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let nova = note_with(&dir, "nova");
+
+        assert_eq!(ids(&dir), vec![nova, antiga]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Lixeira
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn delete_move_para_a_lixeira_e_restore_traz_de_volta() {
+        let (_temp, dir) = workspace();
+        let id = note_with(&dir, "texto importante");
+
+        delete(&dir, &id).expect("deletar");
+        assert!(ids(&dir).is_empty());
+        assert_eq!(trash_count(&dir).expect("contar"), 1);
+
+        restore(&dir, &id).expect("restaurar");
+        assert_eq!(ids(&dir), vec![id.clone()]);
+        assert_eq!(trash_count(&dir).expect("contar"), 0);
+        assert_eq!(
+            fs::read_to_string(note_path(&dir, &id).unwrap()).unwrap(),
+            "texto importante"
+        );
+    }
+
+    /// O undo duplicava a nota quando o delete não tinha acontecido de fato.
+    /// Deletar o que não existe é um no-op, e restaurar o que não está na
+    /// lixeira precisa falhar em vez de inventar um arquivo.
+    #[test]
+    fn delete_e_restore_de_nota_ausente() {
+        let (_temp, dir) = workspace();
+
+        assert!(delete(&dir, "n404").is_ok());
+        assert!(restore(&dir, "n404").is_err());
+        assert!(ids(&dir).is_empty());
+    }
+
+    #[test]
+    fn restore_aceita_o_formato_antigo_sem_carimbo() {
+        let (_temp, dir) = workspace();
+        ensure_dir(&trash_dir(&dir)).expect("criar lixeira");
+        fs::write(trash_dir(&dir).join("n123.md"), "legado").expect("gravar legado");
+
+        restore(&dir, "n123").expect("restaurar legado");
+        assert_eq!(ids(&dir), vec!["n123".to_string()]);
+    }
+
+    /// `rename` preserva o mtime: medir a idade por ele apagaria na hora uma
+    /// nota antiga recém-deletada. Aqui os dois arquivos acabaram de ser
+    /// escritos — só o carimbo do nome distingue um do outro.
+    #[test]
+    fn purge_trash_usa_o_carimbo_do_nome_e_nao_o_mtime() {
+        let (_temp, dir) = workspace();
+        let trash = trash_dir(&dir);
+        ensure_dir(&trash).expect("criar lixeira");
+
+        let agora = now_millis();
+        let velha = trash.join(format!("{}__nvelha.md", agora - 3 * DAY));
+        let recente = trash.join(format!("{}__nrecente.md", agora - 3600_000));
+        fs::write(&velha, "velha").expect("gravar velha");
+        fs::write(&recente, "recente").expect("gravar recente");
+
+        assert_eq!(purge_trash(&dir, 1).expect("limpar"), 1);
+        assert!(!velha.exists());
+        assert!(recente.exists());
+    }
+
+    #[test]
+    fn purge_trash_com_retencao_zero_nunca_apaga() {
+        let (_temp, dir) = workspace();
+        let trash = trash_dir(&dir);
+        ensure_dir(&trash).expect("criar lixeira");
+        fs::write(trash.join("1__nantiga.md"), "de 1970").expect("gravar");
+
+        assert_eq!(purge_trash(&dir, 0).expect("limpar"), 0);
+        assert_eq!(trash_count(&dir).expect("contar"), 1);
+    }
+
+    #[test]
+    fn empty_trash_esvazia_e_nao_toca_nas_notas_ativas() {
+        let (_temp, dir) = workspace();
+        let viva = note_with(&dir, "viva");
+        delete(&dir, &note_with(&dir, "morta")).expect("deletar");
+
+        assert_eq!(empty_trash(&dir).expect("esvaziar"), 1);
+        assert_eq!(trash_count(&dir).expect("contar"), 0);
+        assert_eq!(ids(&dir), vec![viva]);
+    }
+
+    #[test]
+    fn purge_remove_sem_passar_pela_lixeira() {
+        let (_temp, dir) = workspace();
+        let id = create(&dir).expect("criar").id;
+
+        purge(&dir, &id).expect("descartar");
+        assert!(ids(&dir).is_empty());
+        assert_eq!(trash_count(&dir).expect("contar"), 0);
+        assert!(purge(&dir, &id).is_ok(), "descartar duas vezes é no-op");
+    }
+
+    // -----------------------------------------------------------------------
+    // Troca de pasta
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn move_all_leva_as_notas_e_deixa_a_lixeira_para_tras() {
+        let temp = TempDir::new().expect("pasta temporária");
+        let origem = temp.path().join("antiga");
+        let destino = temp.path().join("nova");
+        ensure_dir(&origem).expect("criar origem");
+
+        let id = note_with(&origem, "vai junto");
+        delete(&origem, &note_with(&origem, "fica na lixeira")).expect("deletar");
+
+        assert_eq!(move_all(&origem, &destino).expect("mover"), 1);
+        assert_eq!(ids(&destino), vec![id]);
+        assert!(ids(&origem).is_empty());
+        assert_eq!(trash_count(&origem).expect("contar"), 1);
+        assert_eq!(trash_count(&destino).expect("contar"), 0);
+    }
+
+    #[test]
+    fn move_all_preserva_o_arquivo_do_destino_em_caso_de_conflito() {
+        let temp = TempDir::new().expect("pasta temporária");
+        let origem = temp.path().join("antiga");
+        let destino = temp.path().join("nova");
+        ensure_dir(&origem).expect("criar origem");
+        ensure_dir(&destino).expect("criar destino");
+
+        fs::write(origem.join("n1.md"), "origem").expect("gravar origem");
+        fs::write(destino.join("n1.md"), "destino").expect("gravar destino");
+
+        assert_eq!(move_all(&origem, &destino).expect("mover"), 0);
+        assert_eq!(
+            fs::read_to_string(destino.join("n1.md")).unwrap(),
+            "destino"
+        );
+        assert_eq!(fs::read_to_string(origem.join("n1.md")).unwrap(), "origem");
+    }
+
+    #[test]
+    fn move_all_para_a_mesma_pasta_e_no_op() {
+        let (_temp, dir) = workspace();
+        let id = note_with(&dir, "parada");
+
+        assert_eq!(move_all(&dir, &dir).expect("mover"), 0);
+        assert_eq!(ids(&dir), vec![id]);
+    }
+}
