@@ -5,12 +5,13 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  // A janela de configurações é uma página separada da janela de notas.
+  // Configurações e notas destacadas são páginas separadas da janela principal.
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         settings: "settings.html",
+        note: "note.html",
       },
     },
   },

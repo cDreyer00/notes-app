@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   firstLine,
   hasModifier,
+  isOutsideBounds,
   matchesAccelerator,
   normalizeKey,
   normalizeText,
   parseAccelerator,
+  pickInitialNote,
   prettyAccelerator,
   relativeTime,
   searchNotes,
+  toPhysicalPoint,
   type Note,
 } from "./shared";
 
@@ -242,5 +245,76 @@ describe("relativeTime", () => {
   it("trata data no futuro como agora", () => {
     const agora = agoraEm("2026-08-05T12:00:00");
     expect(relativeTime(agora + 60_000)).toBe("agora");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Arrastar um card para fora da janela
+// ---------------------------------------------------------------------------
+
+describe("isOutsideBounds", () => {
+  const janela = { x: 100, y: 100, width: 500, height: 400 };
+
+  it("reconhece um ponto dentro da janela", () => {
+    expect(isOutsideBounds({ x: 350, y: 300 }, janela)).toBe(false);
+    expect(isOutsideBounds({ x: 100, y: 100 }, janela)).toBe(false);
+    expect(isOutsideBounds({ x: 600, y: 500 }, janela)).toBe(false);
+  });
+
+  it("reconhece um ponto fora por qualquer um dos quatro lados", () => {
+    expect(isOutsideBounds({ x: 99, y: 300 }, janela)).toBe(true);
+    expect(isOutsideBounds({ x: 601, y: 300 }, janela)).toBe(true);
+    expect(isOutsideBounds({ x: 350, y: 99 }, janela)).toBe(true);
+    expect(isOutsideBounds({ x: 350, y: 501 }, janela)).toBe(true);
+  });
+
+  /**
+   * O caso que motivou separar a conversão: num monitor a 150%, o mouse
+   * reporta 400 CSS px onde a janela começa em 600 físicos. Sem converter, um
+   * ponto no meio da janela seria lido como "à esquerda dela" e cada arraste
+   * curto viraria uma janela nova.
+   */
+  it("só decide certo depois de converter o ponto para pixels físicos", () => {
+    const pontoCss = { x: 400, y: 300 };
+    expect(isOutsideBounds(pontoCss, { x: 600, y: 200, width: 800, height: 600 })).toBe(true);
+
+    const fisico = toPhysicalPoint(pontoCss, 1.5);
+    expect(fisico).toEqual({ x: 600, y: 450 });
+    expect(isOutsideBounds(fisico, { x: 600, y: 200, width: 800, height: 600 })).toBe(false);
+  });
+
+  it("mantém o ponto inalterado sem escala", () => {
+    expect(toPhysicalPoint({ x: 120, y: 80 }, 1)).toEqual({ x: 120, y: 80 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nota inicial da janela principal
+// ---------------------------------------------------------------------------
+
+describe("pickInitialNote", () => {
+  const notas = [
+    note("a", "primeira", 3),
+    note("b", "segunda", 2),
+    note("c", "terceira", 1),
+  ];
+
+  it("abre a mais recente quando nenhuma está destacada", () => {
+    expect(pickInitialNote(notas, new Set())?.id).toBe("a");
+  });
+
+  /** Abrir aqui a nota que já está em janela própria daria dois editores
+   *  sobre o mesmo arquivo — o último a salvar apagaria o texto do outro. */
+  it("pula as que já estão em janela própria", () => {
+    expect(pickInitialNote(notas, new Set(["a"]))?.id).toBe("b");
+    expect(pickInitialNote(notas, new Set(["a", "b"]))?.id).toBe("c");
+  });
+
+  it("devolve null quando todas estão destacadas", () => {
+    expect(pickInitialNote(notas, new Set(["a", "b", "c"]))).toBeNull();
+  });
+
+  it("devolve null sem notas", () => {
+    expect(pickInitialNote([], new Set())).toBeNull();
   });
 });

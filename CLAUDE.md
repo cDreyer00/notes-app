@@ -2,16 +2,17 @@
 esse documento é um documento vivo, o que significa que pode e deve ser atualizado sempre que pertinete.
 
 ## Seu papel
-Seu objetivo é ser um desenvolvedor de software experiente e trabalhar em conjunto com o usuario. Voce não apenas deve sair criando e fazer o que é pedido, sempre tenha senso critico e trate o desenvolvimento com um produto para ser feito em conjunto. Tome esse projeto como seu também, questione, critique e aceite apenas decisões que voce também considera que fazem sentido. Vocês é **parceiro** do usuario, e não subordinado.
+Seu objetivo é ser um desenvolvedor de software experiente e trabalhar em conjunto com o usuario. Voce não apenas deve sair criando e fazer o que é pedido, sempre tenha senso critico e trate o desenvolvimento com um produto para ser feito em conjunto. Tome esse projeto como seu também, questione, critique e aceite apenas decisões que voce também considera que fazem sentido. Você é **parceiro** do usuario, e não subordinado.
 
 use o @overview.md como ponto de partida
 
 ## Considerações importantes
 - Sempre pesquise documentações atualizadas, ferramentas atualizam constantemente e devem sempre ser revisadas.
 - O projeto deve ser desenvolvido dentro de "project/", a raiz deve conter apenas documentações, git e o que mais for essencial de se ter na raiz
-- Não ignore duvidas suas não respondidas pelo usuario. Se algo ainda esta incerto ou se o usuario não esclareceu todas suas duvidas atuais, insista no dialogo até tudo estar esclarecido para ambos os lados
+- Não ignore duvidas suas não respondidas pelo usuario. Se algo ainda esta incerto ou se o usuario não esclareceu todas suas duvidas atuais, insista no dialogo até tudo estar esclarecido para ambos os lados.
+- Priorize fazer duvidas individuais ao invés de varias em uma mesma mensagem. A ideia é dar espaço para dialogo e debate entre as duvidas. Se um conjunto de duvidas surgir para a resolução de um problema (qualquer problema), registre elas e repasse uma por uma de forma individual.
 - **Atualize o `overview.md` sempre que pertinente**, na mesma leva da mudança. Ele descreve o comportamento pretendido do produto; se o código anda e o documento fica para trás, ele deixa de servir como ponto de partida e vira desinformação.
-- Você tem permissão para **encerrar e subir de novo o `tauri dev`** sempre que fizer sentido, sem perguntar. Encerrar o comando não mata os filhos: o `notes.exe` e o Vite ficam órfãos, a porta 1420 segue ocupada e a subida seguinte falha. Limpe os dois antes de subir.
+- Você tem permissão para **encerrar e subir de novo o `tauri dev`** sempre que fizer sentido, sem perguntar. Encerrar o comando não mata os filhos: o `notes.exe` e o Vite ficam órfãos, a porta 1420 segue ocupada e a subida seguinte falha. Limpe os dois antes de subir. O procedimento completo está na skill **`/dev`**.
 
 ---
 
@@ -30,16 +31,23 @@ O comportamento do produto está em `overview.md`. Aqui fica só o lado técnico
 
 ```
 project/
-  index.html          janela de notas (editor + grid)
+  index.html          janela principal (editor + grid)
+  note.html           janela de uma nota destacada (só editor)
   settings.html       janela de configurações
   src/
     shared.ts         API de comandos, parser de atalhos, busca, tempo relativo
     shared.test.ts    testes das funções puras de shared.ts (Vitest)
-    main.ts           lógica da janela de notas
+    editor-core.ts    mecânica de editor compartilhada entre main.ts e note.ts
+                       (fila de disco, autosave, confirmação de exclusão)
+    window-chrome.ts  o que toda janela frameless tem igual: alças de
+                       redimensionamento, áreas de arraste, rodapé de dicas
+    main.ts           lógica da janela principal
+    note.ts           lógica de uma janela de nota destacada
     settings.ts       lógica da janela de configurações
-    styles.css        tema dark, usado pelas duas janelas
+    styles.css        tema dark, usado pelas três janelas
   src-tauri/src/
-    lib.rs            tray, atalho global, janelas e comandos
+    lib.rs            tray, atalho global, janelas (principal, destacadas,
+                       configurações) e comandos
     config.rs         leitura/escrita de settings.json
     notes.rs          CRUD dos arquivos .md e lixeira
 ```
@@ -69,6 +77,51 @@ Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 - **O resize é disparado pelo frontend** porque `start_resize_dragging` não existe no
   `WebviewWindow` do Rust — só no `Window` interno, inacessível, e o `ResizeDirection` nem é
   reexportado pelo crate.
+- **`DragState` é um `HashMap<label, Instant>`, não um valor único.** Com janelas de nota
+  destacada existindo ao mesmo tempo da principal, arrastar uma não pode marcar a outra como
+  "em interação" — cada label tem sua própria carência.
+- **Esconder no blur passa por um debounce de 150ms num thread separado** (`schedule_hide_check`
+  em `lib.rs`), em vez de agir na hora do `Focused(false)`. Trocar o foco entre duas janelas do
+  próprio Notes gera um blur seguido de um focus quase imediato, e a ordem de chegada dos dois
+  eventos não é garantida — a checagem, feita só quando o prazo vence, olha pro estado final
+  (`any_notes_window_focused`) em vez de depender de qual evento chegou primeiro.
+- **`hide_all`/`show_all` operam sobre a principal e toda janela `note-*` juntas, nunca uma de
+  cada vez** — é o que faz "esconder o app" ser uma operação do conjunto, não da janela que
+  perdeu o foco.
+- **Uma janela de nota destacada nunca é destruída por `.destroy()` a partir de outro
+  comando.** Tanto o botão de fechar (chama `undetach_note`) quanto o clique no card da grid
+  passam por `window.close()`, que dispara `CloseRequested` — a limpeza da composição salva
+  (`cleanup_detached`) mora só ali, um único caminho, em vez de duplicada entre o comando e o
+  handler do evento.
+- **A janela `settings` fica de fora do `is_notes_window`** — nunca fez parte do ciclo
+  esconder/mostrar da principal, e a generalização pro multi-janela não mudou isso: focar as
+  configurações ainda esconde a principal, como sempre esteve.
+- **`delete_note` fecha a janela destacada da nota**, venha o comando de onde vier. Uma
+  janela viva sobre um arquivo que foi pra lixeira recria a nota no primeiro autosave — e
+  pelo mesmo motivo, quem deleta de dentro de uma destacada marca `deleted` e **pula o
+  flush** ao fechar: `flushSave` compararia o texto da tela com o último conteúdo conhecido,
+  veria diferença e gravaria de volta.
+- **Deletar de uma destacada emite `note-deleted` pra principal**, que exibe o "desfazer".
+  O comando sabe quem chamou pelo `WebviewWindow` injetado; da principal ele não emite,
+  porque lá o toast já sai pelo caminho normal.
+- **`emit_to` e não `emit` para evento endereçado.** No Tauri v2 o `emit` de uma janela é
+  broadcast pra todas. E do lado do frontend o par obrigatório é
+  `getCurrentWebviewWindow().listen`: o `listen` global se registra como alvo "qualquer um",
+  que **não** casa com emissão endereçada (`manager/mod.rs`, `filter_target`).
+- **`undetach_note` sem janela limpa a composição na mão.** É o único caminho que não tem
+  `CloseRequested` pra disparar a limpeza; sem ele, uma entrada órfã (criação que falhou,
+  nota apagada por fora) deixaria o card tracejado e surdo ao clique pra sempre. O `setup`
+  ainda poda do `detached` o que não existe mais no disco.
+- **O arraste de card converte o ponto do mouse pra pixel físico antes de qualquer conta.**
+  `MouseEvent.screenX` vem em pixel CSS e a API de janela do Tauri fala em físico: a 150% os
+  dois diferem por um terço, e a comparação crua chamava de "fora da janela" um ponto no meio
+  dela. `isOutsideBounds`/`toPhysicalPoint` são puras justamente pra isso ter teste.
+- **`detach_note` relê a config depois de criar a janela.** A criação leva centenas de
+  milissegundos; gravar a cópia lida antes dela desfazia o que outra janela salvasse no
+  intervalo — a posição da principal, o pino.
+- **O `hide_all` agendado carrega um número de geração.** Trocar o foco entre janelas do app
+  agenda várias checagens; sem o contador, duas vencendo juntas rodariam o esconder (e o
+  `app-hiding`, que o frontend responde salvando e descartando) em duplicata.
 
 ## Dev e instalado convivem como dois apps
 
@@ -95,6 +148,10 @@ compilação de debug servida pelo Vite em modo dev.
   app instalado: `enable` faria o Windows subir o `target/debug` no boot, e `disable` apagaria o
   autostart do app de verdade. Por isso o checkbox aparece desabilitado na janela de
   configurações do dev — controle que não faz nada é pior que controle desligado.
+- **O que a separação não cobre: instalar com o dev aberto o derruba.** O instalador NSIS
+  encerra processos com o mesmo nome de imagem, e o binário de dev também é `notes.exe`. O
+  `tauri dev` morre com exit 1 sem mensagem — parece crash, não é. Separar exigiria renomear o
+  crate, o que não compensa por um efeito que só aparece na hora de instalar.
 
 ## Ícone
 
@@ -106,6 +163,12 @@ O desenho é validado a **16px**, não a 1024: é o tamanho da bandeja, onde o �
 vive. Aí só sobrevive silhueta simples com poucos elementos — uma versão com três linhas de
 texto virou mancha listrada e foi descartada em favor de duas. O `.ico` é referenciado pelo
 `tauri.conf.json` e o tray puxa dele via `default_window_icon()`.
+
+## Branches
+
+Gitflow: `main` só recebe merge de `develop`, na hora de lançar uma versão (junto com a tag
+`vX.Y.Z`, ver Versionamento abaixo). Toda feature nasce em `feature/<nome>` a partir de
+`develop` e volta pra lá via merge — nunca direto em `main`.
 
 ## Versionamento
 
@@ -137,8 +200,8 @@ autor usando.
 ## Testes
 
 Cobrem **lógica pura**: `notes.rs` (arquivos e lixeira, com `tempfile`), `config.rs` (leitura
-do `settings.json`), `corner_fits` em `lib.rs` e as funções de `shared.ts` (atalhos, busca,
-tempo relativo).
+do `settings.json`), `corner_fits`/`saved_geometry`/`prune_detached` em `lib.rs` e as funções
+de `shared.ts` (atalhos, busca, tempo relativo, limites de janela e escolha da nota inicial).
 
 - **Não há E2E, de propósito.** Os bugs de janela — arrastar e redimensionar caindo no
   `Focused(false)` — vinham do comportamento nativo do Windows com foco, que nenhum driver

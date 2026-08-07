@@ -24,6 +24,16 @@ Nunca pule fases. Nunca publique sem ter olhado o artefato.
 
 ## Fase 1 — Pré-voo
 
+0. **`main` em dia com `develop`.** Gitflow: `main` só recebe merge de `develop`, na hora de
+   lançar uma versão — nunca commit direto. Faça esse merge primeiro, antes do resto do
+   pré-voo, pra árvore limpa e os testes valerem pro código que de fato vai ser taggeado:
+   ```
+   git checkout develop && git pull
+   git checkout main && git pull
+   git merge develop --no-edit
+   git push origin main
+   ```
+   Da fase 2 em diante, tudo roda em cima de `main` já atualizada.
 1. **Árvore limpa.** `git status --short` precisa vir vazio. Mudança pendente ou entra no
    release (commit antes) ou fica de fora (stash) — mas não pode ficar solta, ou o instalador
    deixa de corresponder ao commit.

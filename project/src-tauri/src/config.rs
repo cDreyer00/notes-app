@@ -49,6 +49,9 @@ pub struct Shortcuts {
     pub new_note: String,
     pub delete_note: String,
     pub toggle_pin: String,
+    pub detach_note: String,
+    /// Só vale dentro de uma janela de nota destacada — na principal é ignorado.
+    pub close_window: String,
 }
 
 impl Default for Shortcuts {
@@ -60,8 +63,21 @@ impl Default for Shortcuts {
             new_note: "Control+E".into(),
             delete_note: "Control+D".into(),
             toggle_pin: "Control+F".into(),
+            detach_note: "Control+Shift+E".into(),
+            close_window: "Control+W".into(),
         }
     }
+}
+
+/// Uma janela de nota destacada da grid. Posição e tamanho ficam `None` até a
+/// janela ser movida ou redimensionada pela primeira vez, igual à janela
+/// principal — mesmo campo, mesma semântica, um por nota destacada.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetachedWindow {
+    pub note_id: String,
+    pub pos: Option<(i32, i32)>,
+    pub size: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,8 +93,13 @@ pub struct Config {
     pub window_size: Option<(u32, u32)>,
     /// Dias que uma nota deletada permanece na lixeira. `0` significa "nunca limpar".
     pub trash_retention_days: u32,
-    /// Janela fixada: perder o foco deixa de esconder o app.
+    /// Janela fixada: perder o foco deixa de esconder o app. Vale pra principal
+    /// e todas as destacadas juntas — não é preferência por janela.
     pub pinned: bool,
+    /// Notas atualmente destacadas em janela própria, com a posição e o
+    /// tamanho de cada uma — é o que permite reabrir o app com a mesma
+    /// composição de janelas de antes.
+    pub detached: Vec<DetachedWindow>,
 }
 
 impl Default for Config {
@@ -91,6 +112,7 @@ impl Default for Config {
             window_size: None,
             trash_retention_days: 30,
             pinned: false,
+            detached: Vec::new(),
         }
     }
 }
@@ -209,9 +231,12 @@ mod tests {
         assert_eq!(cfg.autostart, false);
         assert_eq!(cfg.trash_retention_days, 7);
         assert_eq!(cfg.notes_dir, PathBuf::from("D:/notas"));
-        // O campo que ainda não existia no arquivo assume o padrão.
+        // Os campos que ainda não existiam no arquivo assumem o padrão.
         assert_eq!(cfg.shortcuts.toggle_pin, Shortcuts::default().toggle_pin);
+        assert_eq!(cfg.shortcuts.detach_note, Shortcuts::default().detach_note);
+        assert_eq!(cfg.shortcuts.close_window, Shortcuts::default().close_window);
         assert_eq!(cfg.pinned, false);
+        assert!(cfg.detached.is_empty());
     }
 
     #[test]
@@ -239,6 +264,18 @@ mod tests {
         cfg.window_size = Some((640, 480));
         cfg.pinned = true;
         cfg.trash_retention_days = 0;
+        cfg.detached = vec![
+            DetachedWindow {
+                note_id: "n1".into(),
+                pos: Some((10, 20)),
+                size: Some((300, 200)),
+            },
+            DetachedWindow {
+                note_id: "n2".into(),
+                pos: None,
+                size: None,
+            },
+        ];
 
         let raw = serde_json::to_string(&cfg).expect("serializar");
         assert!(raw.contains("trashRetentionDays"), "esperado camelCase: {raw}");
@@ -249,5 +286,32 @@ mod tests {
         assert_eq!(lido.pinned, true);
         assert_eq!(lido.trash_retention_days, 0);
         assert_eq!(lido.notes_dir, PathBuf::from("C:/notas"));
+        assert_eq!(lido.detached.len(), 2);
+        assert_eq!(lido.detached[0].note_id, "n1");
+        assert_eq!(lido.detached[0].pos, Some((10, 20)));
+        assert_eq!(lido.detached[1].pos, None);
+    }
+
+    /// Os dois atalhos novos precisam ser distintos dos já existentes, senão
+    /// o comando novo silenciosamente colidiria com um atalho antigo.
+    #[test]
+    fn atalhos_novos_nao_colidem_com_os_existentes() {
+        let s = Shortcuts::default();
+        let all = [
+            &s.toggle_app,
+            &s.toggle_view,
+            &s.new_note,
+            &s.delete_note,
+            &s.toggle_pin,
+            &s.detach_note,
+            &s.close_window,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "atalhos padrão colidindo: {a} e {b}");
+                }
+            }
+        }
     }
 }

@@ -1,16 +1,22 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { createAutosave, createDeleteConfirm, createDiskQueue } from "./editor-core";
 import {
   api,
-  IS_DEV,
+  isOutsideBounds,
   matchesAccelerator,
+  pickInitialNote,
   prettyAccelerator,
   relativeTime,
   searchNotes,
+  toPhysicalPoint,
   type Config,
   type Note,
-  type ResizeDirection,
+  type RemoteCommand,
+  type WindowBounds,
 } from "./shared";
+import { hintItem, initWindowChrome, renderHints as renderHintsInto, type Hint } from "./window-chrome";
 
 type View = "editor" | "grid";
 
@@ -24,7 +30,6 @@ const hintsEl = document.querySelector<HTMLElement>("#hints")!;
 const confirmEl = document.querySelector<HTMLElement>("#confirm")!;
 const toastEl = document.querySelector<HTMLElement>("#toast")!;
 
-const SAVE_DEBOUNCE_MS = 400;
 const UNDO_WINDOW_MS = 5000;
 
 let config: Config;
@@ -33,82 +38,38 @@ let visibleNotes: Note[] = [];
 let view: View = "editor";
 let currentId: string | null = null;
 let selectedIndex = 0;
-let pendingDeleteId: string | null = null;
-let saveTimer: number | undefined;
 let undoTimer: number | undefined;
+/** Ids das notas atualmente abertas em janela própria. */
+let detachedIds = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Persistência
 // ---------------------------------------------------------------------------
 
-function scheduleSave(): void {
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => void flushSave(), SAVE_DEBOUNCE_MS);
-}
+const disk = createDiskQueue();
 
-/**
- * Gravação, exclusão e restauração passam por uma fila única. Sem isso, um
- * autosave em voo terminaria depois do delete e recriaria o arquivo que acabou
- * de ir para a lixeira.
- */
-let diskQueue: Promise<unknown> = Promise.resolve();
-
-function enqueue<T>(task: () => Promise<T>): Promise<T> {
-  const result = diskQueue.then(task, task);
-  diskQueue = result.catch(() => undefined);
-  return result;
-}
-
-/**
- * O arquivo só nasce quando existe texto. Criar antes deixaria um `.md` vazio
- * no disco toda vez que o app fosse aberto e fechado sem se escrever nada.
- */
-async function flushSave(): Promise<void> {
-  window.clearTimeout(saveTimer);
-
-  // Alvo e conteúdo são fixados agora; a fila pode executar isto depois de o
-  // usuário já ter trocado de nota.
-  const content = editorEl.value;
-  let targetId = currentId;
-
-  await enqueue(async () => {
-    try {
-      if (!targetId) {
-        if (content.trim() === "") return;
-        const created = await api.createNote();
-        targetId = created.id;
-        notes.unshift(created);
-        if (currentId === null) currentId = created.id;
-      }
-
-      const note = notes.find((item) => item.id === targetId);
-      if (note && note.content === content) return;
-
-      const modified = await api.saveNote(targetId, content);
-      if (note) {
-        note.content = content;
-        note.modified = Number(modified);
-      }
-    } catch (error) {
-      console.error("falha ao salvar a nota", error);
+const autosave = createAutosave(editorEl, {
+  getCurrentId: () => currentId,
+  setCurrentId: (id) => {
+    currentId = id;
+  },
+  getExisting: (id) => notes.find((note) => note.id === id),
+  onSaved: (note) => {
+    const existing = notes.find((item) => item.id === note.id);
+    if (existing) {
+      existing.content = note.content;
+      existing.modified = note.modified;
+    } else {
+      notes.unshift(note);
     }
-  });
-}
+  },
+  onDiscarded: (id) => {
+    notes = notes.filter((note) => note.id !== id);
+  },
+  enqueue: disk.enqueue,
+});
 
-/** Nota existente que foi esvaziada some da grid em vez de virar card em branco. */
-async function discardIfEmpty(): Promise<void> {
-  if (!currentId) return;
-  if (editorEl.value.trim() !== "") return;
-
-  const id = currentId;
-  currentId = null;
-  notes = notes.filter((note) => note.id !== id);
-  try {
-    await enqueue(() => api.purgeNote(id));
-  } catch (error) {
-    console.error("falha ao descartar nota vazia", error);
-  }
-}
+const { scheduleSave, flushSave, discardIfEmpty } = autosave;
 
 // ---------------------------------------------------------------------------
 // Navegação entre as views
@@ -148,8 +109,13 @@ async function toggleView(): Promise<void> {
     return;
   }
 
-  const target =
-    notes.find((note) => note.id === currentId) ?? visibleNotes[selectedIndex];
+  // Uma nota destacada não pode ser reaberta aqui: seriam dois editores sobre
+  // o mesmo arquivo, cada um com seu autosave, e o último a gravar apagaria o
+  // texto do outro.
+  const target = [
+    notes.find((note) => note.id === currentId),
+    visibleNotes[selectedIndex],
+  ].find((note) => note && !detachedIds.has(note.id));
   openEditor(target ?? null);
 }
 
@@ -159,9 +125,30 @@ async function startNewNote(): Promise<void> {
   openEditor(null);
 }
 
+/** Destaca a nota em edição numa janela própria e volta pra grid. */
+async function detachCurrent(): Promise<void> {
+  if (view !== "editor") return;
+
+  // Grava antes: uma nota recém-digitada ainda pode não ter arquivo, e sem
+  // `id` não há o que destacar.
+  await flushSave();
+  const id = currentId;
+  if (!id) return;
+
+  await api.detachNote(id);
+  // A nota passou a ser de outra janela: deixar o editor daqui apontando pra
+  // ela faria um `toggleView` seguinte reabri-la em dose dupla.
+  currentId = null;
+  editorEl.value = "";
+  await showGrid();
+}
+
+/** Enter na grid: mesmo efeito do clique no card, inclusive o de recolher. */
 async function openSelected(): Promise<void> {
   const note = visibleNotes[selectedIndex];
-  if (note) openEditor(note);
+  if (!note) return;
+  if (detachedIds.has(note.id)) await api.undetachNote(note.id);
+  else openEditor(note);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,9 +160,10 @@ function renderGrid(): void {
   gridEl.replaceChildren();
 
   for (const note of visibleNotes) {
+    const isDetached = detachedIds.has(note.id);
+
     const card = document.createElement("div");
-    card.className = "card";
-    card.dataset.id = note.id;
+    card.className = isDetached ? "card card-detached" : "card";
 
     const body = document.createElement("p");
     body.className = "card-body";
@@ -183,10 +171,20 @@ function renderGrid(): void {
 
     const time = document.createElement("span");
     time.className = "card-time";
-    time.textContent = relativeTime(note.modified);
+    time.textContent = isDetached ? "em outra janela" : relativeTime(note.modified);
 
     card.append(body, time);
-    card.addEventListener("click", () => openEditor(note));
+    // Nota destacada já está aberta em janela própria: clicar aqui recolhe
+    // ela de volta, em vez de abrir mais uma vez dentro da principal.
+    card.addEventListener("click", () => {
+      if (suppressNextClick) return;
+      if (isDetached) void api.undetachNote(note.id);
+      else openEditor(note);
+    });
+    // Uma nota já destacada não arrasta pra virar outra janela — ela já é uma.
+    if (!isDetached) {
+      card.addEventListener("mousedown", (event) => beginCardDrag(note, event));
+    }
     gridEl.append(card);
   }
 
@@ -196,6 +194,107 @@ function renderGrid(): void {
 
   gridEmptyEl.classList.toggle("hidden", visibleNotes.length > 0);
   updateSelection();
+}
+
+// ---------------------------------------------------------------------------
+// Arrastar um card pra fora vira janela destacada
+// ---------------------------------------------------------------------------
+
+/** Abaixo disso é clique; acima, arraste. */
+const DRAG_THRESHOLD_PX = 6;
+
+let dragNote: Note | null = null;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragActive = false;
+/** Limites da janela em pixels físicos, congelados no início do arraste. */
+let dragBounds: WindowBounds | null = null;
+/** Pixels físicos por pixel CSS; o evento do mouse reporta em CSS. */
+let dragScale = 1;
+let ghostEl: HTMLElement | null = null;
+/**
+ * Um arraste que terminou não pode também disparar o `click` nativo do
+ * mouseup. A flag é desarmada no `mousedown` seguinte, e não no clique que
+ * ela cancela: soltar fora da janela (o caso mais comum aqui) ou em cima da
+ * busca não gera clique nenhum em card, e a flag ficaria armada engolindo o
+ * próximo clique de verdade.
+ */
+let suppressNextClick = false;
+
+function positionGhost(x: number, y: number): void {
+  if (!ghostEl) return;
+  ghostEl.style.left = `${x}px`;
+  ghostEl.style.top = `${y}px`;
+}
+
+function createGhost(note: Note, x: number, y: number): void {
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.textContent = note.content.trim() || "(vazia)";
+  document.body.append(ghost);
+  ghostEl = ghost;
+  positionGhost(x, y);
+}
+
+function beginCardDrag(note: Note, event: MouseEvent): void {
+  if (event.button !== 0) return;
+  dragNote = note;
+  dragStartX = event.clientX;
+  dragStartY = event.clientY;
+  dragActive = false;
+  window.addEventListener("mousemove", onCardDragMove);
+  window.addEventListener("mouseup", onCardDragEnd);
+}
+
+async function onCardDragMove(event: MouseEvent): Promise<void> {
+  const note = dragNote;
+  if (!note) return;
+
+  if (!dragActive) {
+    const moved = Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY);
+    if (moved < DRAG_THRESHOLD_PX) return;
+
+    dragActive = true;
+    const win = getCurrentWindow();
+    const [position, size, scale] = await Promise.all([
+      win.outerPosition(),
+      win.outerSize(),
+      win.scaleFactor(),
+    ]);
+    // O arraste não move a janela principal; os limites capturados agora
+    // continuam valendo até o mouseup.
+    dragBounds = { x: position.x, y: position.y, width: size.width, height: size.height };
+    dragScale = scale;
+    createGhost(note, event.clientX, event.clientY);
+  }
+
+  positionGhost(event.clientX, event.clientY);
+}
+
+function onCardDragEnd(event: MouseEvent): void {
+  window.removeEventListener("mousemove", onCardDragMove);
+  window.removeEventListener("mouseup", onCardDragEnd);
+
+  const note = dragNote;
+  const wasActive = dragActive;
+  const bounds = dragBounds;
+  const scale = dragScale;
+  ghostEl?.remove();
+  ghostEl = null;
+  dragNote = null;
+  dragActive = false;
+  dragBounds = null;
+
+  if (!note || !wasActive || !bounds) return;
+  suppressNextClick = true;
+
+  // O ponto do drop vira físico antes de qualquer conta: os limites da janela
+  // vêm em físico, e o Rust também trata `x`/`y` assim ao posicionar a janela
+  // nova sob o cursor.
+  const drop = toPhysicalPoint({ x: event.screenX, y: event.screenY }, scale);
+  if (isOutsideBounds(drop, bounds)) {
+    void api.detachNote(note.id, drop.x, drop.y);
+  }
 }
 
 function updateSelection(): void {
@@ -233,47 +332,41 @@ function moveSelection(delta: number): void {
 // Exclusão
 // ---------------------------------------------------------------------------
 
+const deleteConfirm = createDeleteConfirm(
+  {
+    overlay: confirmEl,
+    confirmButton: document.querySelector<HTMLButtonElement>("#confirm-ok")!,
+    cancelButton: document.querySelector<HTMLButtonElement>("#confirm-cancel")!,
+  },
+  async (id) => {
+    autosave.clearScheduled();
+
+    try {
+      await disk.enqueue(() => api.deleteNote(id));
+    } catch (error) {
+      console.error("falha ao deletar nota", error);
+      return;
+    }
+
+    // Esvaziar o editor é obrigatório: com texto e sem `currentId`, o autosave
+    // trataria o conteúdo como nota nova e recriaria a que acabou de ser deletada.
+    if (currentId === id) {
+      currentId = null;
+      editorEl.value = "";
+    }
+    notes = notes.filter((note) => note.id !== id);
+    await showGrid();
+    showUndo(id);
+  },
+);
+
 async function askDelete(): Promise<void> {
   // Grava antes de perguntar: uma nota recém-digitada ainda pode não ter
   // arquivo, e sem `id` não haveria o que deletar.
   if (view === "editor") await flushSave();
 
   const id = view === "editor" ? currentId : visibleNotes[selectedIndex]?.id;
-  if (!id) return;
-
-  pendingDeleteId = id;
-  confirmEl.classList.remove("hidden");
-  document.querySelector<HTMLButtonElement>("#confirm-ok")!.focus();
-}
-
-function closeConfirm(): void {
-  pendingDeleteId = null;
-  confirmEl.classList.add("hidden");
-}
-
-async function confirmDelete(): Promise<void> {
-  const id = pendingDeleteId;
-  if (!id) return;
-
-  window.clearTimeout(saveTimer);
-  closeConfirm();
-
-  try {
-    await enqueue(() => api.deleteNote(id));
-  } catch (error) {
-    console.error("falha ao deletar nota", error);
-    return;
-  }
-
-  // Esvaziar o editor é obrigatório: com texto e sem `currentId`, o autosave
-  // trataria o conteúdo como nota nova e recriaria a que acabou de ser deletada.
-  if (currentId === id) {
-    currentId = null;
-    editorEl.value = "";
-  }
-  notes = notes.filter((note) => note.id !== id);
-  await showGrid();
-  showUndo(id);
+  deleteConfirm.ask(id);
 }
 
 function showUndo(id: string): void {
@@ -285,7 +378,7 @@ function showUndo(id: string): void {
     window.clearTimeout(undoTimer);
     toastEl.classList.add("hidden");
     try {
-      await enqueue(() => api.restoreNote(id));
+      await disk.enqueue(() => api.restoreNote(id));
       notes = await api.listNotes();
       renderGrid();
     } catch (error) {
@@ -358,16 +451,7 @@ function handleGridKeys(event: KeyboardEvent): void {
 }
 
 function handleKeyDown(event: KeyboardEvent): void {
-  if (pendingDeleteId) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void confirmDelete();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      closeConfirm();
-    }
-    return;
-  }
+  if (deleteConfirm.handleKey(event)) return;
 
   const { shortcuts } = config;
 
@@ -395,6 +479,12 @@ function handleKeyDown(event: KeyboardEvent): void {
     return;
   }
 
+  if (matchesAccelerator(event, shortcuts.detachNote)) {
+    event.preventDefault();
+    void detachCurrent();
+    return;
+  }
+
   if (event.key === "Escape") {
     event.preventDefault();
     if (view === "editor") void showGrid();
@@ -411,7 +501,7 @@ function handleKeyDown(event: KeyboardEvent): void {
 
 function renderHints(): void {
   const { shortcuts } = config;
-  const entries: Array<[string, string]> =
+  const hints: Hint[] =
     view === "grid"
       ? [
           // Navegar e abrir vêm primeiro: é o que se faz na grid, e sem a dica
@@ -427,35 +517,15 @@ function renderHints(): void {
           [prettyAccelerator(shortcuts.deleteNote), "deletar"],
         ];
 
-  hintsEl.replaceChildren();
-
-  // Com o app instalado aberto ao lado, as duas janelas são idênticas. Sem
-  // esta marca, dá para editar as notas de teste achando que são as de verdade.
-  if (IS_DEV) {
-    const badge = document.createElement("span");
-    badge.className = "hint-dev";
-    badge.textContent = "dev";
-    hintsEl.append(badge);
-  }
-
-  for (const [keys, label] of entries) {
-    const item = document.createElement("span");
-    const kbd = document.createElement("kbd");
-    kbd.textContent = keys;
-    item.append(kbd, document.createTextNode(` ${label}`));
-    hintsEl.append(item);
-  }
+  renderHintsInto(hintsEl, hints);
 
   // O pino precisa de sinal visível: sem ele, a janela que não some mais
   // parece defeito em vez de escolha.
-  const pin = document.createElement("span");
-  pin.className = config.pinned ? "hint-pin active" : "hint-pin";
-  const pinKey = document.createElement("kbd");
-  pinKey.textContent = prettyAccelerator(shortcuts.togglePin);
-  pin.append(
-    pinKey,
-    document.createTextNode(config.pinned ? " fixada" : " fixar"),
+  const pin = hintItem(
+    prettyAccelerator(shortcuts.togglePin),
+    config.pinned ? "fixada" : "fixar",
   );
+  pin.className = config.pinned ? "hint-pin active" : "hint-pin";
   hintsEl.append(pin);
 }
 
@@ -473,11 +543,22 @@ async function togglePin(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function init(): Promise<void> {
+  initWindowChrome();
+
   config = await api.getConfig();
+  detachedIds = new Set(config.detached.map((entry) => entry.noteId));
   notes = await api.listNotes();
 
   // Abre onde o usuário parou: o caso comum é querer continuar escrevendo.
-  openEditor(notes[0] ?? null);
+  // Mas não a mesma nota que já está aberta numa janela destacada — nesse
+  // caso a próxima mais recente entra no lugar, ou a grid se todas estiverem.
+  if (notes.length === 0) {
+    openEditor(null);
+  } else {
+    const initial = pickInitialNote(notes, detachedIds);
+    if (initial) openEditor(initial);
+    else await showGrid();
+  }
 
   editorEl.addEventListener("input", scheduleSave);
   searchEl.addEventListener("input", () => {
@@ -487,36 +568,15 @@ async function init(): Promise<void> {
 
   document.addEventListener("keydown", handleKeyDown, true);
 
-  // O arraste passa pelo Rust para que o blur que ele provoca não seja
-  // confundido com "clicou fora" e esconda a janela no meio do movimento.
-  for (const area of document.querySelectorAll<HTMLElement>("[data-drag]")) {
-    area.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      void api.beginDrag();
-    });
-  }
-
-  // Mesma história para as bordas: as nativas são tratadas pelo sistema e a
-  // janela sumiria ao começar o redimensionamento. O Rust marca a interação
-  // primeiro; só depois o resize começa de fato.
-  for (const handle of document.querySelectorAll<HTMLElement>("[data-resize]")) {
-    handle.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      const direction = handle.dataset.resize as ResizeDirection;
-      void api
-        .beginResize()
-        .then(() => getCurrentWindow().startResizeDragging(direction));
-    });
-  }
-
-  document
-    .querySelector<HTMLButtonElement>("#confirm-ok")!
-    .addEventListener("click", () => void confirmDelete());
-  document
-    .querySelector<HTMLButtonElement>("#confirm-cancel")!
-    .addEventListener("click", closeConfirm);
+  // Todo clique novo na grid começa com a supressão desarmada — ver a nota
+  // em `suppressNextClick`. Em captura, para vir antes do handler do card.
+  gridEl.addEventListener(
+    "mousedown",
+    () => {
+      suppressNextClick = false;
+    },
+    true,
+  );
 
   // A janela some ao perder o foco; grava antes que o debounce expire.
   window.addEventListener("blur", () => void flushSave());
@@ -532,6 +592,34 @@ async function init(): Promise<void> {
   await listen<Config>("config-changed", (event) => {
     config = event.payload;
     renderHints();
+  });
+  await listen<string[]>("detached-changed", (event) => {
+    detachedIds = new Set(event.payload);
+    if (view === "grid") renderGrid();
+  });
+  // Os dois eventos abaixo são endereçados a esta janela (`emit_to` no Rust),
+  // e um `listen` global se registra como alvo "qualquer um" — que não casa
+  // com emissão endereçada. Por isso vão pelo listener da própria janela.
+  const thisWindow = getCurrentWebviewWindow();
+
+  // Nota deletada de dentro de uma janela destacada: lá não existe grid onde
+  // pôr o "desfazer", e sem ele o Enter da confirmação seria irreversível na
+  // prática. O toast é sempre desta janela.
+  await thisWindow.listen<string>("note-deleted", (event) => {
+    notes = notes.filter((note) => note.id !== event.payload);
+    if (currentId === event.payload) {
+      currentId = null;
+      editorEl.value = "";
+    }
+    if (view === "grid") renderGrid();
+    showUndo(event.payload);
+  });
+  // Comando que uma janela de nota destacada não podia executar sozinha —
+  // aqui é como se o atalho tivesse sido pressionado nesta janela mesmo.
+  await thisWindow.listen<RemoteCommand>("remote-command", (event) => {
+    if (event.payload === "newNote") void startNewNote();
+    else if (event.payload === "toggleView") void toggleView();
+    else if (event.payload === "togglePin") void togglePin();
   });
 }
 

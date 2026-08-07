@@ -24,8 +24,10 @@ fn now_millis() -> u128 {
 }
 
 /// Ids são gerados por nós e viram nome de arquivo, então qualquer coisa fora
-/// deste alfabeto veio adulterada e não pode virar caminho.
-fn validate_id(id: &str) -> Result<(), String> {
+/// deste alfabeto veio adulterada e não pode virar caminho. Também vale para
+/// os usos fora deste módulo — o id vira label de janela e chave persistida
+/// no `settings.json`, e ali um valor torto é igualmente indesejado.
+pub fn validate_id(id: &str) -> Result<(), String> {
     let ok = !id.is_empty()
         && id.len() <= 64
         && id

@@ -20,6 +20,16 @@ export interface Shortcuts {
   newNote: string;
   deleteNote: string;
   togglePin: string;
+  detachNote: string;
+  /** Só vale dentro de uma janela de nota destacada — na principal é ignorado. */
+  closeWindow: string;
+}
+
+/** Uma janela de nota destacada da grid, com sua posição e tamanho próprios. */
+export interface DetachedWindow {
+  noteId: string;
+  pos: [number, number] | null;
+  size: [number, number] | null;
 }
 
 export interface Config {
@@ -32,8 +42,10 @@ export interface Config {
   windowSize: [number, number] | null;
   /** Dias de permanência na lixeira; `0` significa "nunca limpar". */
   trashRetentionDays: number;
-  /** Janela fixada: perder o foco deixa de esconder o app. */
+  /** Janela fixada: perder o foco deixa de esconder o app inteiro. */
   pinned: boolean;
+  /** Notas atualmente destacadas em janela própria. */
+  detached: DetachedWindow[];
 }
 
 /** Bordas aceitas por `startResizeDragging`; o tipo não é exportado pela API. */
@@ -74,7 +86,68 @@ export const api = {
   openSettings: () => invoke<void>("open_settings"),
   closeSettings: () => invoke<void>("close_settings"),
   quitApp: () => invoke<void>("quit_app"),
+  /** `x`/`y` vêm de um drop fora da grid; sem eles a janela nasce centralizada. */
+  detachNote: (id: string, x?: number, y?: number) =>
+    invoke<void>("detach_note", { id, x, y }),
+  undetachNote: (id: string) => invoke<void>("undetach_note", { id }),
+  /** Foca a principal e pede que ela execute `action` por conta própria —
+   * usado pelas janelas de nota destacada, onde só deletar é local. */
+  focusMain: (action: RemoteCommand) => invoke<void>("focus_main", { action }),
 };
+
+/** Comandos que uma janela de nota destacada redireciona pra principal. */
+export type RemoteCommand = "newNote" | "toggleView" | "togglePin";
+
+// ---------------------------------------------------------------------------
+// Janelas
+// ---------------------------------------------------------------------------
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * O ponto caiu fora da janela? Usado pelo arraste de um card para decidir se
+ * ele vira janela própria.
+ *
+ * **Os dois lados precisam estar em pixels físicos.** Um `MouseEvent` reporta
+ * `screenX/screenY` em pixels CSS, enquanto a API de janela do Tauri devolve
+ * físicos: num monitor a 150% os dois diferem por um terço, e a comparação
+ * crua diria "fora" para um ponto bem no meio da janela.
+ */
+export function isOutsideBounds(point: Point, bounds: WindowBounds): boolean {
+  return (
+    point.x < bounds.x ||
+    point.y < bounds.y ||
+    point.x > bounds.x + bounds.width ||
+    point.y > bounds.y + bounds.height
+  );
+}
+
+/** Converte um ponto de tela em pixels CSS para pixels físicos. */
+export function toPhysicalPoint(point: Point, scale: number): Point {
+  return { x: Math.round(point.x * scale), y: Math.round(point.y * scale) };
+}
+
+/**
+ * A nota em que a janela principal abre: a mais recente que ainda não está
+ * numa janela própria. `null` quando não sobra nenhuma — abrir ali seria
+ * editar a mesma nota em dois lugares, cada um com seu autosave.
+ */
+export function pickInitialNote(
+  notes: Note[],
+  detached: ReadonlySet<string>,
+): Note | null {
+  return notes.find((note) => !detached.has(note.id)) ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Atalhos
