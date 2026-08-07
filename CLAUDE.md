@@ -41,18 +41,31 @@ project/
                        (fila de disco, autosave, confirmação de exclusão)
     window-chrome.ts  o que toda janela frameless tem igual: alças de
                        redimensionamento, áreas de arraste, rodapé de dicas
+    grid.ts           a grid de notas: cards, busca, navegação por teclado e
+                       o arraste de card pra fora
     main.ts           lógica da janela principal
     note.ts           lógica de uma janela de nota destacada
     settings.ts       lógica da janela de configurações
     styles.css        tema dark, usado pelas três janelas
   src-tauri/src/
-    lib.rs            tray, atalho global, janelas (principal, destacadas,
-                       configurações) e comandos
+    lib.rs            montagem do app (`run`), atalho global e os comandos
+    window.rs         identificação, geometria, esconder/mostrar em conjunto e
+                       o ciclo de vida das janelas de nota destacada
+    tray.rs           ícone na bandeja e menu de contexto
     config.rs         leitura/escrita de settings.json
     notes.rs          CRUD dos arquivos .md e lixeira
 ```
 
 Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
+
+O corte entre módulos é por **assunto que muda junto**, não por camada. `window.rs` existe
+porque janela é o que mais cresceu neste app e as suas partes se chamam entre si o tempo todo
+(esconder salva geometria, que depende de identificar a janela). Os comandos ficam em `lib.rs`
+de propósito: são casca fina — leem a config, delegam e emitem um evento — e juntá-los num
+`commands.rs` só trocaria um arquivo grande por outro. Se um dia doerem, o corte útil é por
+assunto (`commands/notes.rs`, `commands/window.rs`), nunca "todos os comandos juntos".
+Mesma ideia no frontend: `grid.ts` recebe o que fazer por callbacks (`GridHooks`) e não conhece
+editor nem backend, então a grid pode ganhar comportamento sem tocar em `main.ts`.
 
 ## Decisões que não são óbvias no código
 
