@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applySavedNote,
   firstLine,
   hasModifier,
   isOutsideBounds,
@@ -316,5 +317,54 @@ describe("pickInitialNote", () => {
 
   it("devolve null sem notas", () => {
     expect(pickInitialNote([], new Set())).toBeNull();
+  });
+});
+
+/**
+ * Nota editada numa janela destacada precisa alcançar a lista da principal.
+ * Sem isso a grid exibia o texto anterior e — o caso feio — abrir a nota por
+ * aquele card levava a versão velha para o editor, que a regravava por cima do
+ * que tinha sido escrito na outra janela.
+ */
+describe("applySavedNote", () => {
+  it("atualiza conteúdo e horário da nota que já está na lista", () => {
+    const notas = [note("a", "antigo", 1), note("b", "outra", 2)];
+
+    applySavedNote(notas, note("a", "novo", 99));
+
+    expect(notas).toHaveLength(2);
+    expect(notas[0].content).toBe("novo");
+    expect(notas[0].modified).toBe(99);
+  });
+
+  /** A mesma referência precisa sobreviver: a grid guarda os objetos da lista
+   *  até o próximo render, e trocá-los deixaria cards apontando para a versão
+   *  velha. */
+  it("mantém o objeto original em vez de substituí-lo", () => {
+    const alvo = note("a", "antigo", 1);
+    const notas = [alvo];
+
+    applySavedNote(notas, note("a", "novo", 99));
+
+    expect(notas[0]).toBe(alvo);
+  });
+
+  /** Nota criada em outra janela ainda não existe aqui. */
+  it("insere no topo a nota que a lista não conhecia", () => {
+    const notas = [note("a", "primeira", 1)];
+
+    applySavedNote(notas, note("z", "recém-criada", 99));
+
+    expect(notas.map((n) => n.id)).toEqual(["z", "a"]);
+  });
+
+  /** A ordem não se refaz aqui: reordenar moveria cards sob o cursor enquanto
+   *  se digita na outra janela. Ela se acerta na próxima relistagem. */
+  it("não reordena a lista pelo horário novo", () => {
+    const notas = [note("a", "mais recente", 10), note("b", "antiga", 5)];
+
+    applySavedNote(notas, note("b", "editada agora", 99));
+
+    expect(notas.map((n) => n.id)).toEqual(["a", "b"]);
   });
 });

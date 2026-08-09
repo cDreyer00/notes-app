@@ -117,6 +117,18 @@ editor nem backend, então a grid pode ganhar comportamento sem tocar em `main.t
 - **Deletar de uma destacada emite `note-deleted` pra principal**, que exibe o "desfazer".
   O comando sabe quem chamou pelo `WebviewWindow` injetado; da principal ele não emite,
   porque lá o toast já sai pelo caminho normal.
+- **`save_note` emite `note-saved` pra principal quando quem gravou foi outra janela.** A
+  principal guarda as notas em memória e só relia o disco em quatro momentos (boot, entrar na
+  grid, `app-shown`, desfazer); nada disso acontece enquanto se digita numa destacada. Sem o
+  aviso, a grid mostrava o texto anterior e — o caso grave — abrir a nota por aquele card
+  levava a versão velha pro editor, que a regravava por cima do que fora escrito na outra
+  janela. O listener nunca escreve no textarea, só na lista: uma nota em edição aqui nunca é
+  a mesma que está numa destacada, e escrever na tela a partir de evento atropelaria quem
+  digita.
+- **`detached-changed` também relista do disco.** O `note-saved` cobre gravação, mas não a
+  nota que a destacada esvaziou (`purge_note`, que não emite) — sem a relistagem, o card
+  ficava na grid apontando pra um arquivo que já não existe. Uma leitura de disco no
+  fechamento de uma janela não custa nada.
 - **`emit_to` e não `emit` para evento endereçado.** No Tauri v2 o `emit` de uma janela é
   broadcast pra todas. E do lado do frontend o par obrigatório é
   `getCurrentWebviewWindow().listen`: o `listen` global se registra como alvo "qualquer um",

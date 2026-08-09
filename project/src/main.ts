@@ -4,6 +4,7 @@ import { createAutosave, createDeleteConfirm, createDiskQueue } from "./editor-c
 import { createGrid } from "./grid";
 import {
   api,
+  applySavedNote,
   matchesAccelerator,
   pickInitialNote,
   prettyAccelerator,
@@ -347,8 +348,12 @@ async function init(): Promise<void> {
     config = event.payload;
     renderHints();
   });
-  await listen<string[]>("detached-changed", (event) => {
+  await listen<string[]>("detached-changed", async (event) => {
     detachedIds = new Set(event.payload);
+    // Relê o disco: a janela que acabou de fechar pode ter gravado uma última
+    // vez ou descartado a nota por tê-la esvaziado (`purge`), e nem toda
+    // mudança dela chega aqui como evento próprio.
+    notes = await api.listNotes();
     if (view === "grid") grid.render();
   });
   // Os dois eventos abaixo são endereçados a esta janela (`emit_to` no Rust),
@@ -367,6 +372,16 @@ async function init(): Promise<void> {
     }
     if (view === "grid") grid.render();
     showUndo(event.payload);
+  });
+  // Gravação vinda de uma janela de nota destacada. Só a lista em memória é
+  // atualizada, nunca o editor: quem está sendo editado aqui é outra nota, e
+  // escrever no textarea a partir de um evento atropelaria a digitação.
+  // A ordem dos cards não se refaz agora, igual ao que o autosave local já faz
+  // — ela se acerta na próxima relistagem, e cards saltando enquanto se digita
+  // na outra janela seria pior que a ordem ficar um instante desatualizada.
+  await thisWindow.listen<Note>("note-saved", (event) => {
+    applySavedNote(notes, event.payload);
+    if (view === "grid") grid.render();
   });
   // Comando que uma janela de nota destacada não podia executar sozinha —
   // aqui é como se o atalho tivesse sido pressionado nesta janela mesmo.

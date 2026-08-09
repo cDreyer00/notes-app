@@ -158,10 +158,35 @@ fn create_note(app: AppHandle) -> Result<Note, String> {
     notes::create(&cfg.notes_dir)
 }
 
+/// Grava e avisa a principal quando quem gravou foi outra janela. Sem esse
+/// aviso a lista em memória da principal envelhece: a grid mostraria o texto
+/// anterior e, pior, abrir a nota por aquele card levaria a versão velha para
+/// o editor — a primeira tecla digitada ali gravaria por cima do que tinha
+/// sido escrito na janela destacada.
 #[tauri::command]
-fn save_note(app: AppHandle, id: String, content: String) -> Result<u128, String> {
+fn save_note(
+    window: WebviewWindow,
+    app: AppHandle,
+    id: String,
+    content: String,
+) -> Result<u128, String> {
     let cfg = config::load(&app)?;
-    notes::save(&cfg.notes_dir, &id, &content)
+    let modified = notes::save(&cfg.notes_dir, &id, &content)?;
+
+    // Da principal não sai aviso: lá o autosave já atualiza a própria lista, e
+    // nenhuma destacada mostra nota que não seja a sua.
+    if window.label() != "main" {
+        let _ = app.emit_to(
+            "main",
+            "note-saved",
+            Note {
+                id,
+                content,
+                modified,
+            },
+        );
+    }
+    Ok(modified)
 }
 
 /// Deletar acontece de três lugares (editor da principal, card da grid,
