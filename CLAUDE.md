@@ -41,18 +41,31 @@ project/
                        (fila de disco, autosave, confirmação de exclusão)
     window-chrome.ts  o que toda janela frameless tem igual: alças de
                        redimensionamento, áreas de arraste, rodapé de dicas
+    grid.ts           a grid de notas: cards, busca, navegação por teclado e
+                       o arraste de card pra fora
     main.ts           lógica da janela principal
     note.ts           lógica de uma janela de nota destacada
     settings.ts       lógica da janela de configurações
     styles.css        tema dark, usado pelas três janelas
   src-tauri/src/
-    lib.rs            tray, atalho global, janelas (principal, destacadas,
-                       configurações) e comandos
+    lib.rs            montagem do app (`run`), atalho global e os comandos
+    window.rs         identificação, geometria, esconder/mostrar em conjunto e
+                       o ciclo de vida das janelas de nota destacada
+    tray.rs           ícone na bandeja e menu de contexto
     config.rs         leitura/escrita de settings.json
     notes.rs          CRUD dos arquivos .md e lixeira
 ```
 
 Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
+
+O corte entre módulos é por **assunto que muda junto**, não por camada. `window.rs` existe
+porque janela é o que mais cresceu neste app e as suas partes se chamam entre si o tempo todo
+(esconder salva geometria, que depende de identificar a janela). Os comandos ficam em `lib.rs`
+de propósito: são casca fina — leem a config, delegam e emitem um evento — e juntá-los num
+`commands.rs` só trocaria um arquivo grande por outro. Se um dia doerem, o corte útil é por
+assunto (`commands/notes.rs`, `commands/window.rs`), nunca "todos os comandos juntos".
+Mesma ideia no frontend: `grid.ts` recebe o que fazer por callbacks (`GridHooks`) e não conhece
+editor nem backend, então a grid pode ganhar comportamento sem tocar em `main.ts`.
 
 ## Decisões que não são óbvias no código
 
@@ -104,6 +117,18 @@ Os testes de Rust ficam em `#[cfg(test)] mod tests` no fim de cada arquivo.
 - **Deletar de uma destacada emite `note-deleted` pra principal**, que exibe o "desfazer".
   O comando sabe quem chamou pelo `WebviewWindow` injetado; da principal ele não emite,
   porque lá o toast já sai pelo caminho normal.
+- **`save_note` emite `note-saved` pra principal quando quem gravou foi outra janela.** A
+  principal guarda as notas em memória e só relia o disco em quatro momentos (boot, entrar na
+  grid, `app-shown`, desfazer); nada disso acontece enquanto se digita numa destacada. Sem o
+  aviso, a grid mostrava o texto anterior e — o caso grave — abrir a nota por aquele card
+  levava a versão velha pro editor, que a regravava por cima do que fora escrito na outra
+  janela. O listener nunca escreve no textarea, só na lista: uma nota em edição aqui nunca é
+  a mesma que está numa destacada, e escrever na tela a partir de evento atropelaria quem
+  digita.
+- **`detached-changed` também relista do disco.** O `note-saved` cobre gravação, mas não a
+  nota que a destacada esvaziou (`purge_note`, que não emite) — sem a relistagem, o card
+  ficava na grid apontando pra um arquivo que já não existe. Uma leitura de disco no
+  fechamento de uma janela não custa nada.
 - **`emit_to` e não `emit` para evento endereçado.** No Tauri v2 o `emit` de uma janela é
   broadcast pra todas. E do lado do frontend o par obrigatório é
   `getCurrentWebviewWindow().listen`: o `listen` global se registra como alvo "qualquer um",

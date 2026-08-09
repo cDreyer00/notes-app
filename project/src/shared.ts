@@ -149,6 +149,26 @@ export function pickInitialNote(
   return notes.find((note) => !detached.has(note.id)) ?? null;
 }
 
+/**
+ * Aplica na lista uma gravação feita em outra janela. Muda a nota **no lugar**,
+ * em vez de trocá-la por um objeto novo: a grid guarda referências aos mesmos
+ * objetos até o próximo render, e substituir deixaria essas referências
+ * apontando para a versão velha.
+ *
+ * A ordem não é refeita aqui de propósito — a grid se reordena na próxima
+ * relistagem, e mover cards enquanto se digita na outra janela seria pior do
+ * que a ordem ficar um instante atrás.
+ */
+export function applySavedNote(notes: Note[], saved: Note): void {
+  const existing = notes.find((note) => note.id === saved.id);
+  if (!existing) {
+    notes.unshift(saved);
+    return;
+  }
+  existing.content = saved.content;
+  existing.modified = saved.modified;
+}
+
 // ---------------------------------------------------------------------------
 // Atalhos
 // ---------------------------------------------------------------------------
