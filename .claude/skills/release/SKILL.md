@@ -128,6 +128,12 @@ Antes de publicar qualquer coisa, olhe o que foi produzido:
    - **O que tem nesta versão** — em linguagem de usuário, não de commit
    - **Notas técnicas** — tamanho, e que não há atualização automática
 4. Confirme que o asset subiu: `gh release view v<versão> --json assets`.
+5. **Traga o bump de volta pra `develop`.** O merge do pré-voo foi `develop` → `main`, e o
+   commit da versão nasceu depois dele, só na `main`. Sem este passo a `develop` segue
+   achando que é a versão anterior, e a próxima release parte de um `Cargo.toml` errado:
+   ```
+   git checkout develop && git merge main --no-edit && git push origin develop
+   ```
 
 O repositório é privado, então o Release também é. Isso é esperado — ele funciona como backup
 versionado do binário.
