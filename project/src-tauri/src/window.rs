@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 /// Arrastar uma janela tira o foco do webview dela, o que seria confundido
@@ -36,6 +36,15 @@ const HIDE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// checagens vencendo juntas rodariam `hide_all` duas vezes — e com ela o
 /// `app-hiding`, que o frontend responde salvando e descartando nota vazia.
 pub(crate) struct HideGeneration(pub(crate) Mutex<u64>);
+
+/// Gravar a geometria a cada pixel de um arraste seria uma rajada de escritas
+/// no `settings.json`. Cada movimento agenda a gravação e invalida a anterior:
+/// só a última, quando o gesto para, chega ao disco.
+const GEOMETRY_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// Geração da última gravação agendada, **por janela**: mover uma destacada
+/// não pode cancelar a gravação pendente da principal.
+pub(crate) struct GeometryGeneration(pub(crate) Mutex<HashMap<String, u64>>);
 
 /// Tamanho padrão de uma janela de nota destacada, usado quando ela nasce sem
 /// tamanho salvo (primeira vez que aquela nota é destacada).
@@ -155,6 +164,15 @@ fn restore_geometry(app: &AppHandle, window: &WebviewWindow) {
 }
 
 fn save_geometry(app: &AppHandle, window: &WebviewWindow) {
+    // Janela escondida ou minimizada não tem geometria que valha guardar: o
+    // Windows reporta a minimizada em (-32000, -32000), e esconder e mostrar
+    // gera eventos de movimento. Gravar isso trocaria a posição real por lixo
+    // que a próxima abertura obedeceria. Quem esconde já salvou antes de
+    // esconder, então nada se perde aqui.
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return;
+    }
+
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return;
     };
@@ -188,6 +206,44 @@ fn save_geometry(app: &AppHandle, window: &WebviewWindow) {
     }
 
     let _ = config::save(app, &cfg);
+}
+
+/// Grava a geometria depois que o movimento para. Sem isto, a gravação só
+/// aconteceria ao esconder o app — e com a janela fixada, que é justamente a
+/// que nunca esconde, arrastar ou redimensionar não deixaria rastro: o
+/// `settings.json` guardaria a posição de antes e o próximo `restore_geometry`
+/// puxaria a janela de volta pra ela.
+fn schedule_geometry_save(app: &AppHandle, label: &str) {
+    let Some(state) = app.try_state::<GeometryGeneration>() else {
+        return;
+    };
+    let Ok(mut generations) = state.0.lock() else {
+        return;
+    };
+    let counter = generations.entry(label.to_string()).or_insert(0);
+    *counter += 1;
+    let generation = *counter;
+    drop(generations);
+
+    let handle = app.clone();
+    let label = label.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(GEOMETRY_DEBOUNCE);
+        // Outro movimento chegou depois deste: quem grava é o agendamento dele.
+        let current = handle.try_state::<GeometryGeneration>().and_then(|state| {
+            state
+                .0
+                .lock()
+                .ok()
+                .and_then(|generations| generations.get(&label).copied())
+        });
+        if current != Some(generation) {
+            return;
+        }
+        if let Some(window) = handle.get_webview_window(&label) {
+            save_geometry(&handle, &window);
+        }
+    });
 }
 
 pub(crate) fn save_all_geometry(app: &AppHandle) {
@@ -261,14 +317,45 @@ fn schedule_hide_check(app: &AppHandle) {
     });
 }
 
+/// Tamanho declarado para a principal no `tauri.conf.json`, em pixel lógico.
+/// Lido de lá em vez de copiado pra cá: com dois números pra manter iguais,
+/// mudar o tamanho da janela deixaria o "voltar ao original" apontando pro
+/// valor antigo.
+fn default_main_size(app: &AppHandle) -> Option<LogicalSize<f64>> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .map(|window| LogicalSize::new(window.width, window.height))
+}
+
 /// Recentraliza a principal e mantém tudo aberto — o duplo toque é "traga o
 /// app de volta por completo", não só a janela principal. O gesto também
 /// redefine a posição salva da principal, senão a próxima abertura voltaria
 /// para o canto de onde se fugiu.
 pub(crate) fn center_main(app: &AppHandle) {
+    reveal_main(app, false);
+}
+
+/// O triplo toque acrescenta ao duplo o tamanho de fábrica: é a saída para a
+/// janela que ficou grande ou minúscula demais pra ser consertada no mouse.
+/// Só a principal — as destacadas têm o tamanho que cada nota ganhou.
+pub(crate) fn reset_main(app: &AppHandle) {
+    reveal_main(app, true);
+}
+
+fn reveal_main(app: &AppHandle, reset_size: bool) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    // O tamanho vem antes do centro, mesma razão de `restore_geometry`:
+    // redimensionar depois deslocaria a janela do lugar onde acabou de parar.
+    if reset_size {
+        if let Some(size) = default_main_size(app) {
+            let _ = window.set_size(size);
+        }
+    }
     let _ = window.center();
     let _ = window.unminimize();
     let _ = window.show();
@@ -396,11 +483,14 @@ pub(crate) fn attach_notes_window_events(app: &AppHandle, window: &WebviewWindow
             }
         }
         // Cada movimento renova a carência: arrastar ou redimensionar por
-        // vários segundos não pode expirar no meio do caminho.
+        // vários segundos não pode expirar no meio do caminho. E, quando o
+        // gesto para, a geometria nova vai pro disco — é aqui que ela muda, e
+        // não em esconder o app.
         WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
             if is_dragging(&handle, &label) {
                 mark_drag(&handle, &label);
             }
+            schedule_geometry_save(&handle, &label);
         }
         WindowEvent::CloseRequested { api, .. } => {
             if let Some(note_id) = window_note_id(&label) {

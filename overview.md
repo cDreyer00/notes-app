@@ -150,8 +150,16 @@ Duas seções, nada além disso:
   posição é salva, reaparecendo sempre no mesmo lugar.
   - Se a posição salva cair fora de todos os monitores atuais, a janela volta ao centro em vez
     de reaparecer invisível.
-- **Duplo acionamento do atalho:** dois toques rápidos no atalho de abrir/ocultar recentralizam
-  a janela em vez de abrir e fechar. O gesto também redefine a posição salva.
+- **Acionamento repetido do atalho:** toques rápidos em sequência no atalho de abrir/ocultar
+  vão desfazendo o que a janela acumulou de estranho, um passo por toque:
+  - **2 toques** recentralizam a janela em vez de abrir e fechar.
+  - **3 toques** recentralizam **e** devolvem o tamanho original — a saída para a janela que
+    ficou grande ou pequena demais para ser consertada no mouse.
+  - Do terceiro em diante nada mais muda: repetir é inofensivo, senão segurar o dedo a mais
+    esconderia o app sem querer.
+  - O gesto redefine a posição (e, no caso de três, o tamanho) salva, senão a próxima abertura
+    traria de volta exatamente o que se acabou de corrigir.
+  - Vale só para a janela principal. As destacadas reaparecem, cada uma no tamanho que ganhou.
 - **Tamanho da janela:** redimensionável pelas bordas e cantos; o tamanho é salvo junto com a
   posição.
 - **Clicar fora esconde o app inteiro:** a principal e toda janela de nota destacada juntas,
