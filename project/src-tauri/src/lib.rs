@@ -23,8 +23,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tray::build_tray;
 use window::{
     attach_notes_window_events, build_note_window, center_main, cleanup_detached,
-    close_note_window, detached_ids, hide_all, mark_drag, prune_detached, save_all_geometry,
-    saved_geometry, show_settings, toggle_app, DragState, HideGeneration,
+    close_note_window, detached_ids, hide_all, mark_drag, prune_detached, reset_main,
+    save_all_geometry, saved_geometry, show_settings, toggle_app, DragState, GeometryGeneration,
+    HideGeneration,
 };
 
 /// Nome exibido no tray e no título das janelas. Com o app instalado rodando,
@@ -55,12 +56,29 @@ fn apply_autostart(_app: &AppHandle, _enabled: bool) {}
 // Atalho global
 // ---------------------------------------------------------------------------
 
-/// Dois toques no atalho dentro desta janela de tempo significam "traga a
-/// janela de volta para o centro" em vez de abrir e fechar em seguida.
+/// Toques do atalho separados por menos que isto contam como uma rajada só:
+/// dois significam "traga a janela de volta para o centro" em vez de abrir e
+/// fechar em seguida, e três acrescentam o tamanho original.
 const DOUBLE_PRESS_WINDOW: Duration = Duration::from_millis(350);
 
-/// Instante do último acionamento do atalho global.
-struct ShortcutTiming(Mutex<Option<Instant>>);
+/// Do terceiro toque em diante o gesto é o mesmo, então a contagem satura
+/// aqui: repetir precisa ser inofensivo, senão quem segurou o dedo a mais
+/// veria o app sumir ou pular pro estado seguinte.
+const MAX_PRESS_COUNT: u8 = 3;
+
+/// Instante e posição na rajada do último acionamento do atalho global.
+struct ShortcutTiming(Mutex<Option<(Instant, u8)>>);
+
+/// Posição deste toque na rajada. Um intervalo maior que a janela de tempo
+/// (ou não haver toque anterior) recomeça a contagem do 1.
+fn next_press_count(previous: Option<(Instant, u8)>, now: Instant) -> u8 {
+    match previous {
+        Some((at, count)) if now.duration_since(at) < DOUBLE_PRESS_WINDOW => {
+            count.saturating_add(1).min(MAX_PRESS_COUNT)
+        }
+        _ => 1,
+    }
+}
 
 /// Registra (e só ele) o atalho de abrir/ocultar. Os demais comandos são
 /// tratados no frontend para não sequestrar combinações de outros programas.
@@ -454,19 +472,17 @@ pub fn run() {
 
                     let timing = app.state::<ShortcutTiming>();
                     let now = Instant::now();
-                    let double_press = {
+                    let count = {
                         let mut last = timing.0.lock().unwrap();
-                        let recent = last
-                            .map(|previous| now.duration_since(previous) < DOUBLE_PRESS_WINDOW)
-                            .unwrap_or(false);
-                        *last = Some(now);
-                        recent
+                        let count = next_press_count(*last, now);
+                        *last = Some((now, count));
+                        count
                     };
 
-                    if double_press {
-                        center_main(app);
-                    } else {
-                        toggle_app(app);
+                    match count {
+                        1 => toggle_app(app),
+                        2 => center_main(app),
+                        _ => reset_main(app),
                     }
                 })
                 .build(),
@@ -502,6 +518,7 @@ pub fn run() {
             app.manage(ShortcutTiming(Mutex::new(None)));
             app.manage(DragState(Mutex::new(HashMap::new())));
             app.manage(HideGeneration(Mutex::new(0)));
+            app.manage(GeometryGeneration(Mutex::new(HashMap::new())));
 
             notes::ensure_dir(&cfg.notes_dir).ok();
             // Lixeira vencida sai na abertura: é o único momento garantido em
@@ -561,4 +578,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn depois(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn primeiro_toque_da_rajada_conta_um() {
+        let agora = Instant::now();
+        assert_eq!(next_press_count(None, agora), 1);
+    }
+
+    #[test]
+    fn toques_seguidos_avancam_a_contagem() {
+        let inicio = Instant::now();
+        assert_eq!(next_press_count(Some((inicio, 1)), depois(inicio, 100)), 2);
+        assert_eq!(next_press_count(Some((inicio, 2)), depois(inicio, 100)), 3);
+    }
+
+    #[test]
+    fn contagem_satura_no_terceiro() {
+        let inicio = Instant::now();
+        assert_eq!(next_press_count(Some((inicio, 3)), depois(inicio, 100)), 3);
+    }
+
+    #[test]
+    fn pausa_maior_que_a_janela_recomeca_do_um() {
+        let inicio = Instant::now();
+        assert_eq!(next_press_count(Some((inicio, 2)), depois(inicio, 351)), 1);
+    }
+
+    #[test]
+    fn a_janela_e_medida_desde_o_toque_anterior_nao_desde_o_primeiro() {
+        // Uma rajada lenta porém contínua: cada toque chega dentro do prazo do
+        // anterior, mesmo somando mais que a janela desde o início.
+        let inicio = Instant::now();
+        let segundo = depois(inicio, 300);
+        assert_eq!(next_press_count(Some((inicio, 1)), segundo), 2);
+        assert_eq!(next_press_count(Some((segundo, 2)), depois(segundo, 300)), 3);
+    }
 }

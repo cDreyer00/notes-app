@@ -144,6 +144,21 @@ editor nem backend, então a grid pode ganhar comportamento sem tocar em `main.t
 - **`detach_note` relê a config depois de criar a janela.** A criação leva centenas de
   milissegundos; gravar a cópia lida antes dela desfazia o que outra janela salvasse no
   intervalo — a posição da principal, o pino.
+- **A geometria é gravada quando muda (`Moved`/`Resized`), não quando o app esconde.** Pendurar
+  a gravação no `hide_all` parecia suficiente até o pino entrar: janela fixada nunca esconde,
+  então arrastá-la não deixava rastro e o `restore_geometry` seguinte a puxava de volta pra
+  posição de antes. O agendamento tem debounce de 400ms com geração **por label** — gravar a
+  cada pixel de arraste seria uma rajada de escritas, e mover uma destacada não pode cancelar
+  a gravação pendente da principal.
+- **`save_geometry` recusa janela escondida ou minimizada.** Agora que qualquer movimento
+  grava, esconder/mostrar e minimizar viraram fontes de evento: o Windows reporta a janela
+  minimizada em `(-32000, -32000)`, e obedecer a isso na próxima abertura mandaria a janela
+  pro limbo.
+- **O "tamanho original" do triplo toque vem do `tauri.conf.json` lido em runtime**
+  (`default_main_size`), não de uma constante no Rust: com o número em dois lugares, mudar o
+  tamanho da janela deixaria o reset apontando pro valor antigo. E é `LogicalSize`, porque a
+  config declara pixel lógico — a 150% de escala um `PhysicalSize` com o mesmo número daria
+  uma janela um terço menor.
 - **O `hide_all` agendado carrega um número de geração.** Trocar o foco entre janelas do app
   agenda várias checagens; sem o contador, duas vencendo juntas rodariam o esconder (e o
   `app-hiding`, que o frontend responde salvando e descartando) em duplicata.
@@ -225,8 +240,9 @@ autor usando.
 ## Testes
 
 Cobrem **lógica pura**: `notes.rs` (arquivos e lixeira, com `tempfile`), `config.rs` (leitura
-do `settings.json`), `corner_fits`/`saved_geometry`/`prune_detached` em `lib.rs` e as funções
-de `shared.ts` (atalhos, busca, tempo relativo, limites de janela e escolha da nota inicial).
+do `settings.json`), `corner_fits`/`saved_geometry`/`prune_detached` em `window.rs`,
+`next_press_count` em `lib.rs` e as funções de `shared.ts` (atalhos, busca, tempo relativo,
+limites de janela e escolha da nota inicial).
 
 - **Não há E2E, de propósito.** Os bugs de janela — arrastar e redimensionar caindo no
   `Focused(false)` — vinham do comportamento nativo do Windows com foco, que nenhum driver
