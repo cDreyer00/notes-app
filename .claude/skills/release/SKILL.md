@@ -72,6 +72,11 @@ não o que o código faz.
 Aplique o bump e **commite antes de buildar** — o nome do instalador carrega a versão, então
 bumpar depois produz um arquivo que mente.
 
+O `Cargo.lock` carrega a versão do próprio crate e é versionado. Editar só o `Cargo.toml`
+deixa o lock para trás, e é a build (fase 3) que o atualiza — depois do commit, já sem
+poder entrar na tag. Rode `cargo check` logo após o bump e **commite os dois juntos**, ou a
+árvore suja vai reaparecer no fim do release.
+
 ---
 
 ## Fase 3 — Build
