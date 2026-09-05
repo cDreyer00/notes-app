@@ -1,12 +1,12 @@
 # Notes
 
-App desktop para Windows feito para anotações rápidas, operado por **atalhos de teclado**. Fica em segundo plano e aparece na tela só quando chamado.
+App desktop para Windows feito para anotações rápidas, operado por atalhos de teclado. Fica em segundo plano e aparece na tela só quando chamado.
 
-O princípio que guia todas as decisões: **o usuário só se preocupa em escrever**. Não existe organizar, nomear, salvar ou arquivar.
+O princípio é só se preocupar em escrever. Não existe organizar, nomear, salvar ou arquivar.
 
 ## Como funciona
 
-Você aperta `Ctrl+Alt+F` de qualquer lugar do sistema, a janela aparece, você escreve, e aperta `Esc`. Pronto — está salvo. Não há botão de salvar, campo de título nem escolha de pasta.
+`Ctrl+Alt+F` para abrir a janela de qualquer lugar do sistema, você escreve, e aperta `Esc` para fechar. Não há botão de salvar (automático), campo de título nem escolha de pasta.
 
 Uma nota aberta e deixada em branco é descartada sozinha, então abrir o app por engano não deixa rastro.
 
@@ -38,7 +38,7 @@ Todos são editáveis nas configurações.
 
 ## Onde ficam as notas
 
-Cada nota é um arquivo `.md` numa pasta única — sem banco de dados, sem formato proprietário. Por padrão em `%APPDATA%\com.cris.notes\notes`, e a pasta é configurável.
+Cada nota é um arquivo `.md` numa pasta única — sem banco de dados, sem formato proprietário. Por padrão em `%APPDATA%\com.{{user}}.notes\notes`, e a pasta é configurável.
 
 Apontar o armazenamento para uma pasta do OneDrive ou do Google Drive dá sincronização entre máquinas sem o app implementar nada. Ao trocar o caminho com notas existentes, o app pergunta se deve movê-las ou apenas passar a usar o novo local.
 
@@ -46,9 +46,9 @@ As notas são salvas em `.md` pelo formato aberto, mas a edição é **texto pur
 
 ## Stack
 
-- **[Tauri v2](https://v2.tauri.app/)** (2.11.x) — Rust + WebView2, que já vem no Windows 11.
-- Frontend em **TypeScript puro + Vite**, sem framework. A interface é um `textarea` e uma grid; um framework só somaria peso.
-- Plugins oficiais: `global-shortcut`, `autostart` e `dialog`. Tray icon e menu de contexto vêm do core do Tauri.
+- **[Tauri v2](https://v2.tauri.app/)** (2.11.x) — Rust + WebView2.
+- Frontend em **TypeScript puro + Vite**.
+- Plugins oficiais: `global-shortcut`, `autostart` e `dialog`.
 
 ## Desenvolvimento
 
